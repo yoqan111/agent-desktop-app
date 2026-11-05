@@ -1,0 +1,961 @@
+import { BrowserWindow, dialog } from 'electron';
+import {
+  changeSpeed,
+  compressMedia,
+  convertMedia,
+  cropMedia,
+  denoiseAudio,
+  enhanceHd,
+  extractMedia,
+  fitAspect,
+  normalizeLoudness,
+  orientMedia,
+  probeMedia,
+  removeWatermark,
+  resizeImage,
+  snapshotFrame,
+  stampMedia,
+  trimAudio,
+  videoToGif,
+  adjustVideo,
+} from './media';
+import { assertAgentPath, grantInput } from './access';
+import {
+  createWorkflowFromScript,
+  deleteWorkflow,
+  getStudioStatus,
+  getWorkflow,
+  installBrowsers,
+  listWorkflows,
+  playWorkflow,
+  startRecord,
+  stopJob,
+  updateWorkflow,
+} from './playwright-studio';
+import type {
+  AspectRatio,
+  AspectRequest,
+  AudioFormat,
+  CompressPreset,
+  CompressRequest,
+  ConvertRequest,
+  CropRequest,
+  DenoiseAudioRequest,
+  DenoiseStrength,
+  EnhanceEngine,
+  EnhanceHdRequest,
+  ExtractMode,
+  ExtractRequest,
+  GifRequest,
+  HdTarget,
+  ImageFormat,
+  LoudnormRequest,
+  MediaKind,
+  MediaProgressEvent,
+  OrientOp,
+  OrientRequest,
+  RemoveWatermarkRequest,
+  ResizeMode,
+  ResizeRequest,
+  SnapshotRequest,
+  SpeedRate,
+  SpeedRequest,
+  StampPosition,
+  StampRequest,
+  TrimAudioRequest,
+  VideoAdjustOutput,
+  VideoAdjustRequest,
+  VideoFormat,
+} from '../shared/media';
+import {
+  ASPECT_RATIOS,
+  AUDIO_FORMATS,
+  COMPRESS_PRESETS,
+  DENOISE_STRENGTHS,
+  HD_TARGETS,
+  IMAGE_FORMATS,
+  ORIENT_OPS,
+  RESIZE_MODES,
+  SPEED_RATES,
+  STAMP_POSITIONS,
+  VIDEO_FORMATS,
+} from '../shared/media';
+import {
+  PLAYWRIGHT_BROWSERS,
+  PLAYWRIGHT_DEVICES,
+  PLAYWRIGHT_RUN_MODES,
+} from '../shared/playwright';
+import type {
+  PlaywrightBrowser,
+  PlaywrightRunMode,
+} from '../shared/playwright';
+
+export interface ToolContext {
+  source: 'ui' | 'agent';
+  onProgress?: (event: MediaProgressEvent) => void;
+}
+
+interface ToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  run: (args: unknown, ctx: ToolContext) => Promise<unknown>;
+}
+
+const kindSchema = { type: 'string', enum: ['video', 'image', 'audio'] };
+const videoFormatSchema = { type: 'string', enum: VIDEO_FORMATS };
+const imageFormatSchema = { type: 'string', enum: IMAGE_FORMATS };
+const audioFormatSchema = { type: 'string', enum: AUDIO_FORMATS };
+const pathSchema = { type: 'string', description: '绝对路径。用户已允许的文件，或本应用生成的临时文件。' };
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('参数必须是对象。');
+  }
+  return value as Record<string, unknown>;
+}
+
+function requiredString(obj: Record<string, unknown>, key: string): string {
+  const value = obj[key];
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${key} 必须是非空字符串。`);
+  }
+  return value;
+}
+
+function optionalString(obj: Record<string, unknown>, key: string): string | undefined {
+  const value = obj[key];
+  if (value == null || value === '') {
+    return undefined;
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`${key} 必须是字符串。`);
+  }
+  return value;
+}
+
+function optionalNumber(obj: Record<string, unknown>, key: string): number | undefined {
+  const value = obj[key];
+  if (value == null || value === '') {
+    return undefined;
+  }
+  const number = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(number)) {
+    throw new Error(`${key} 必须是数字。`);
+  }
+  return number;
+}
+
+function optionalBoolean(obj: Record<string, unknown>, key: string): boolean | undefined {
+  const value = obj[key];
+  if (value == null || value === '') {
+    return undefined;
+  }
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`${key} 必须是布尔值。`);
+}
+
+function oneOf<T extends string>(value: string | undefined, allowed: readonly T[], label: string): T | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if ((allowed as readonly string[]).includes(value)) {
+    return value as T;
+  }
+  throw new Error(`${label}不支持：${value}`);
+}
+
+function resolveInput(filePath: string, ctx: ToolContext): string {
+  if (ctx.source === 'agent') {
+    return assertAgentPath(filePath);
+  }
+  return filePath;
+}
+
+const tools: ToolDefinition[] = [
+  {
+    name: 'media_grant',
+    description: '向用户确认后，允许后续工具处理这个本地文件。确认前不会读取内容。',
+    inputSchema: {
+      type: 'object',
+      properties: { path: { type: 'string', description: '要处理的本地绝对路径。' } },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const pathValue = requiredString(asObject(args), 'path');
+      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+      const prompt = {
+        type: 'question' as const,
+        buttons: ['允许', '拒绝'],
+        defaultId: 1,
+        cancelId: 1,
+        message: '外部 Agent 请求处理这个文件',
+        detail: pathValue,
+      };
+      const choice = win
+        ? await dialog.showMessageBox(win, prompt)
+        : await dialog.showMessageBox(prompt);
+      if (choice.response !== 0) {
+        throw new Error('用户拒绝了这个文件。');
+      }
+      const probe = await probeMedia(pathValue);
+      grantInput(probe.path);
+      return { granted: true, probe };
+    },
+  },
+  {
+    name: 'media_probe',
+    description: '读取视频、图片或音频的宽高、分辨率、码率、精确时长、帧率、编码和大小。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: pathSchema,
+        kind: kindSchema,
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const kind = oneOf(optionalString(obj, 'kind'), ['video', 'image', 'audio'] as const, '类型');
+      return probeMedia(resolveInput(requiredString(obj, 'path'), ctx), kind as MediaKind | undefined);
+    },
+  },
+  {
+    name: 'media_convert',
+    description: '转换视频、图片或音频格式，结果写到临时文件。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: kindSchema,
+        input: pathSchema,
+        format: { type: 'string', description: '视频 mp4/webm/mov/mkv，图片 jpg/png/webp/bmp，音频 mp3/aac/wav/flac/ogg。' },
+      },
+      required: ['kind', 'input', 'format'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: ConvertRequest = {
+        kind: oneOf(requiredString(obj, 'kind'), ['video', 'image', 'audio'] as const, '类型') as MediaKind,
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        format: requiredString(obj, 'format') as VideoFormat | ImageFormat | AudioFormat,
+      };
+      return convertMedia(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_crop',
+    description: '按像素矩形裁剪视频或图片，可选起止秒。结果写到临时文件。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['video', 'image'] },
+        input: pathSchema,
+        x: { type: 'number' },
+        y: { type: 'number' },
+        width: { type: 'number' },
+        height: { type: 'number' },
+        startSec: { type: 'number' },
+        endSec: { type: 'number' },
+        format: { anyOf: [videoFormatSchema, imageFormatSchema] },
+      },
+      required: ['kind', 'input', 'x', 'y', 'width', 'height'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: CropRequest = {
+        kind: oneOf(requiredString(obj, 'kind'), ['video', 'image'] as const, '类型') as 'video' | 'image',
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        x: optionalNumber(obj, 'x') ?? Number.NaN,
+        y: optionalNumber(obj, 'y') ?? Number.NaN,
+        width: optionalNumber(obj, 'width') ?? Number.NaN,
+        height: optionalNumber(obj, 'height') ?? Number.NaN,
+        startSec: optionalNumber(obj, 'startSec'),
+        endSec: optionalNumber(obj, 'endSec'),
+        format: oneOf(
+          optionalString(obj, 'format'),
+          [...VIDEO_FORMATS, ...IMAGE_FORMATS],
+          '格式',
+        ) as VideoFormat | ImageFormat | undefined,
+      };
+      if (![request.x, request.y, request.width, request.height].every(Number.isFinite)) {
+        throw new Error('裁剪区域必须是数字。');
+      }
+      return cropMedia(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_trim_audio',
+    description: '按起止秒裁剪音频。结果写到临时文件。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        input: pathSchema,
+        startSec: { type: 'number' },
+        endSec: { type: 'number' },
+        format: audioFormatSchema,
+      },
+      required: ['input'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: TrimAudioRequest = {
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        startSec: optionalNumber(obj, 'startSec'),
+        endSec: optionalNumber(obj, 'endSec'),
+        format: oneOf(optionalString(obj, 'format'), AUDIO_FORMATS, '格式'),
+      };
+      return trimAudio(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_gif',
+    description: '把视频片段转成 GIF。结果写到临时文件。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        input: pathSchema,
+        fps: { type: 'number' },
+        maxWidth: { type: 'number' },
+        startSec: { type: 'number' },
+        endSec: { type: 'number' },
+      },
+      required: ['input'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: GifRequest = {
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        fps: optionalNumber(obj, 'fps'),
+        maxWidth: optionalNumber(obj, 'maxWidth'),
+        startSec: optionalNumber(obj, 'startSec'),
+        endSec: optionalNumber(obj, 'endSec'),
+      };
+      return videoToGif(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_enhance_hd',
+    description: '把视频或图片放大到 2x、1080p、1440p 或 4k。结果写到临时文件。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['video', 'image'] },
+        input: pathSchema,
+        target: { type: 'string', enum: HD_TARGETS },
+        format: { anyOf: [videoFormatSchema, imageFormatSchema] },
+        engine: { type: 'string', enum: ['ffmpeg', 'ai'] },
+      },
+      required: ['kind', 'input'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: EnhanceHdRequest = {
+        kind: oneOf(requiredString(obj, 'kind'), ['video', 'image'] as const, '类型') as 'video' | 'image',
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        target: oneOf(optionalString(obj, 'target'), HD_TARGETS, '清晰度') as HdTarget | undefined,
+        format: oneOf(
+          optionalString(obj, 'format'),
+          [...VIDEO_FORMATS, ...IMAGE_FORMATS],
+          '格式',
+        ) as VideoFormat | ImageFormat | undefined,
+        engine: oneOf(optionalString(obj, 'engine'), ['ffmpeg', 'ai'] as const, '引擎') as EnhanceEngine | undefined,
+      };
+      return enhanceHd(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_denoise_audio',
+    description: '按低、中、高强度给音频降噪，可选起止秒。结果写到临时文件。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        input: pathSchema,
+        strength: { type: 'string', enum: DENOISE_STRENGTHS },
+        startSec: { type: 'number' },
+        endSec: { type: 'number' },
+        format: audioFormatSchema,
+        engine: { type: 'string', enum: ['ffmpeg', 'ai'] },
+      },
+      required: ['input'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: DenoiseAudioRequest = {
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        strength: oneOf(optionalString(obj, 'strength'), DENOISE_STRENGTHS, '强度') as DenoiseStrength | undefined,
+        startSec: optionalNumber(obj, 'startSec'),
+        endSec: optionalNumber(obj, 'endSec'),
+        format: oneOf(optionalString(obj, 'format'), AUDIO_FORMATS, '格式'),
+        engine: oneOf(optionalString(obj, 'engine'), ['ffmpeg', 'ai'] as const, '引擎') as EnhanceEngine | undefined,
+      };
+      return denoiseAudio(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_remove_watermark',
+    description: '按像素矩形去除视频或图片上的水印（整段处理）。结果写到临时文件。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['video', 'image'] },
+        input: pathSchema,
+        x: { type: 'number' },
+        y: { type: 'number' },
+        width: { type: 'number' },
+        height: { type: 'number' },
+        format: { anyOf: [videoFormatSchema, imageFormatSchema] },
+        engine: { type: 'string', enum: ['ffmpeg', 'ai'] },
+      },
+      required: ['kind', 'input', 'x', 'y', 'width', 'height'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: RemoveWatermarkRequest = {
+        kind: oneOf(requiredString(obj, 'kind'), ['video', 'image'] as const, '类型') as 'video' | 'image',
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        x: optionalNumber(obj, 'x') ?? Number.NaN,
+        y: optionalNumber(obj, 'y') ?? Number.NaN,
+        width: optionalNumber(obj, 'width') ?? Number.NaN,
+        height: optionalNumber(obj, 'height') ?? Number.NaN,
+        format: oneOf(
+          optionalString(obj, 'format'),
+          [...VIDEO_FORMATS, ...IMAGE_FORMATS],
+          '格式',
+        ) as VideoFormat | ImageFormat | undefined,
+        engine: oneOf(optionalString(obj, 'engine'), ['ffmpeg', 'ai'] as const, '引擎') as EnhanceEngine | undefined,
+      };
+      if (![request.x, request.y, request.width, request.height].every(Number.isFinite)) {
+        throw new Error('去水印区域必须是数字。');
+      }
+      return removeWatermark(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_compress',
+    description: '按高画质、均衡或小体积压缩视频或图片。结果写到临时文件。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['video', 'image'] },
+        input: pathSchema,
+        preset: { type: 'string', enum: COMPRESS_PRESETS },
+        format: { anyOf: [videoFormatSchema, imageFormatSchema] },
+      },
+      required: ['kind', 'input'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: CompressRequest = {
+        kind: oneOf(requiredString(obj, 'kind'), ['video', 'image'] as const, '类型') as 'video' | 'image',
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        preset: oneOf(optionalString(obj, 'preset'), COMPRESS_PRESETS, '压缩档位') as CompressPreset | undefined,
+        format: oneOf(optionalString(obj, 'format'), [...VIDEO_FORMATS, ...IMAGE_FORMATS], '格式') as VideoFormat | ImageFormat | undefined,
+      };
+      return compressMedia(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_orient',
+    description: '旋转或镜像视频、图片。rotate90/180/270 为顺时针，flipH/flipV 为水平或垂直翻转。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['video', 'image'] },
+        input: pathSchema,
+        op: { type: 'string', enum: ORIENT_OPS },
+        format: { anyOf: [videoFormatSchema, imageFormatSchema] },
+      },
+      required: ['kind', 'input', 'op'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: OrientRequest = {
+        kind: oneOf(requiredString(obj, 'kind'), ['video', 'image'] as const, '类型') as 'video' | 'image',
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        op: oneOf(requiredString(obj, 'op'), ORIENT_OPS, '方向') as OrientOp,
+        format: oneOf(optionalString(obj, 'format'), [...VIDEO_FORMATS, ...IMAGE_FORMATS], '格式') as VideoFormat | ImageFormat | undefined,
+      };
+      return orientMedia(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_speed',
+    description: '把视频变速为 0.5、1.5 或 2 倍。默认保持音调，changePitch 为 true 时同时变调。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        input: pathSchema,
+        rate: { type: 'number', enum: [...SPEED_RATES] },
+        changePitch: { type: 'boolean' },
+        format: videoFormatSchema,
+      },
+      required: ['input', 'rate'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const rate = optionalNumber(obj, 'rate');
+      if (rate !== 0.5 && rate !== 1.5 && rate !== 2) {
+        throw new Error('变速仅支持 0.5、1.5、2。');
+      }
+      const request: SpeedRequest = {
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        rate: rate as SpeedRate,
+        changePitch: optionalBoolean(obj, 'changePitch'),
+        format: oneOf(optionalString(obj, 'format'), VIDEO_FORMATS, '格式'),
+      };
+      return changeSpeed(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_extract',
+    description: '从视频抽出音轨，或去掉音轨只保留画面。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        input: pathSchema,
+        mode: { type: 'string', enum: ['audio', 'mute'] },
+        format: { anyOf: [videoFormatSchema, audioFormatSchema] },
+      },
+      required: ['input', 'mode'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: ExtractRequest = {
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        mode: oneOf(requiredString(obj, 'mode'), ['audio', 'mute'] as const, '模式') as ExtractMode,
+        format: oneOf(optionalString(obj, 'format'), [...VIDEO_FORMATS, ...AUDIO_FORMATS], '格式') as VideoFormat | AudioFormat | undefined,
+      };
+      return extractMedia(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_snapshot',
+    description: '按秒截取视频中的一帧图片。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        input: pathSchema,
+        timeSec: { type: 'number' },
+        format: imageFormatSchema,
+      },
+      required: ['input'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: SnapshotRequest = {
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        timeSec: optionalNumber(obj, 'timeSec'),
+        format: oneOf(optionalString(obj, 'format'), IMAGE_FORMATS, '格式'),
+      };
+      return snapshotFrame(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_aspect',
+    description: '把视频或图片居中裁成 16:9、1:1 或 9:16。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['video', 'image'] },
+        input: pathSchema,
+        ratio: { type: 'string', enum: ASPECT_RATIOS },
+        format: { anyOf: [videoFormatSchema, imageFormatSchema] },
+      },
+      required: ['kind', 'input', 'ratio'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: AspectRequest = {
+        kind: oneOf(requiredString(obj, 'kind'), ['video', 'image'] as const, '类型') as 'video' | 'image',
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        ratio: oneOf(requiredString(obj, 'ratio'), ASPECT_RATIOS, '比例') as AspectRatio,
+        format: oneOf(optionalString(obj, 'format'), [...VIDEO_FORMATS, ...IMAGE_FORMATS], '格式') as VideoFormat | ImageFormat | undefined,
+      };
+      return fitAspect(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_stamp',
+    description: '给视频或图片烧录文字，或叠加一张台标图片。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['video', 'image'] },
+        input: pathSchema,
+        mode: { type: 'string', enum: ['text', 'logo'] },
+        text: { type: 'string' },
+        logo: pathSchema,
+        position: { type: 'string', enum: STAMP_POSITIONS },
+        format: { anyOf: [videoFormatSchema, imageFormatSchema] },
+      },
+      required: ['kind', 'input', 'mode'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const logo = optionalString(obj, 'logo');
+      const request: StampRequest = {
+        kind: oneOf(requiredString(obj, 'kind'), ['video', 'image'] as const, '类型') as 'video' | 'image',
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        mode: oneOf(requiredString(obj, 'mode'), ['text', 'logo'] as const, '模式') as 'text' | 'logo',
+        text: optionalString(obj, 'text'),
+        logo: logo ? resolveInput(logo, ctx) : undefined,
+        position: oneOf(optionalString(obj, 'position'), STAMP_POSITIONS, '位置') as StampPosition | undefined,
+        format: oneOf(optionalString(obj, 'format'), [...VIDEO_FORMATS, ...IMAGE_FORMATS], '格式') as VideoFormat | ImageFormat | undefined,
+      };
+      return stampMedia(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_loudnorm',
+    description: '把视频或音频的响度标准化到约 -16 LUFS。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['video', 'audio'] },
+        input: pathSchema,
+        format: { anyOf: [videoFormatSchema, audioFormatSchema] },
+      },
+      required: ['kind', 'input'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const request: LoudnormRequest = {
+        kind: oneOf(requiredString(obj, 'kind'), ['video', 'audio'] as const, '类型') as 'video' | 'audio',
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        format: oneOf(optionalString(obj, 'format'), [...VIDEO_FORMATS, ...AUDIO_FORMATS], '格式') as VideoFormat | AudioFormat | undefined,
+      };
+      return normalizeLoudness(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_resize',
+    description: '按宽度、高度或百分比缩放图片，保持比例。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        input: pathSchema,
+        mode: { type: 'string', enum: RESIZE_MODES },
+        value: { type: 'number' },
+        format: imageFormatSchema,
+      },
+      required: ['input', 'mode', 'value'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const value = optionalNumber(obj, 'value');
+      if (value == null) {
+        throw new Error('缩放数值必须是数字。');
+      }
+      const request: ResizeRequest = {
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        mode: oneOf(requiredString(obj, 'mode'), RESIZE_MODES, '缩放方式') as ResizeMode,
+        value,
+        format: oneOf(optionalString(obj, 'format'), IMAGE_FORMATS, '格式'),
+      };
+      return resizeImage(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'media_adjust',
+    description: '一次处理视频的多项调整：旋转、比例、变速、压缩、台标、静音、响度，或改成只出音频、只截一帧。未传的项不生效。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        input: pathSchema,
+        output: { type: 'string', enum: ['video', 'audio', 'frame'] },
+        format: { anyOf: [videoFormatSchema, imageFormatSchema, audioFormatSchema] },
+        orient: { type: 'string', enum: ORIENT_OPS },
+        ratio: { type: 'string', enum: ASPECT_RATIOS },
+        rate: { type: 'number' },
+        changePitch: { type: 'boolean' },
+        preset: { type: 'string', enum: COMPRESS_PRESETS },
+        mute: { type: 'boolean' },
+        loudnorm: { type: 'boolean' },
+        timeSec: { type: 'number' },
+        stampMode: { type: 'string', enum: ['text', 'logo'] },
+        text: { type: 'string' },
+        logo: pathSchema,
+        position: { type: 'string', enum: STAMP_POSITIONS },
+      },
+      required: ['input'],
+      additionalProperties: false,
+    },
+    run: (args, ctx) => {
+      const obj = asObject(args);
+      const rate = optionalNumber(obj, 'rate');
+      const logo = optionalString(obj, 'logo');
+      const request: VideoAdjustRequest = {
+        input: resolveInput(requiredString(obj, 'input'), ctx),
+        output: oneOf(optionalString(obj, 'output'), ['video', 'audio', 'frame'] as const, '输出') as VideoAdjustOutput | undefined,
+        format: oneOf(
+          optionalString(obj, 'format'),
+          [...VIDEO_FORMATS, ...IMAGE_FORMATS, ...AUDIO_FORMATS],
+          '格式',
+        ) as VideoAdjustRequest['format'],
+        orient: oneOf(optionalString(obj, 'orient'), ORIENT_OPS, '方向'),
+        ratio: oneOf(optionalString(obj, 'ratio'), ASPECT_RATIOS, '比例'),
+        rate: rate === 0.5 || rate === 1.5 || rate === 2 ? rate : undefined,
+        changePitch: optionalBoolean(obj, 'changePitch'),
+        preset: oneOf(optionalString(obj, 'preset'), COMPRESS_PRESETS, '压缩档位'),
+        mute: optionalBoolean(obj, 'mute'),
+        loudnorm: optionalBoolean(obj, 'loudnorm'),
+        timeSec: optionalNumber(obj, 'timeSec'),
+        stampMode: oneOf(optionalString(obj, 'stampMode'), ['text', 'logo'] as const, '台标'),
+        text: optionalString(obj, 'text'),
+        logo: logo ? resolveInput(logo, ctx) : undefined,
+        position: oneOf(optionalString(obj, 'position'), STAMP_POSITIONS, '位置'),
+      };
+      if (rate != null && request.rate == null) {
+        throw new Error('变速仅支持 0.5、1.5、2。');
+      }
+      return adjustVideo(request, ctx.onProgress);
+    },
+  },
+  {
+    name: 'playwright_status',
+    description: '查看 Playwright Studio 状态：工作区路径、浏览器是否就绪、是否有录制/回放任务在跑。',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+    run: async () => getStudioStatus(),
+  },
+  {
+    name: 'playwright_list',
+    description: '列出已保存的 Playwright 工作流（名称、URL、浏览器、最近执行状态）。',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+    run: async () => listWorkflows(),
+  },
+  {
+    name: 'playwright_get',
+    description: '读取单个工作流详情，包含完整 Playwright 脚本内容。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '工作流 ID。' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    run: async (args) => getWorkflow(requiredString(asObject(args), 'id')),
+  },
+  {
+    name: 'playwright_create',
+    description: '用 Playwright 脚本文本创建工作流（无需 Codegen）。适合 Agent 直接编写或改写自动化脚本后入库。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '工作流名称。' },
+        url: { type: 'string', description: '起始页面 URL。' },
+        script: { type: 'string', description: '完整 *.spec.ts 脚本，需包含 test(...)。' },
+        browser: { type: 'string', enum: PLAYWRIGHT_BROWSERS, description: '默认 chromium；本机 Chrome 用 chrome。' },
+        device: { type: 'string', enum: [...PLAYWRIGHT_DEVICES], description: '可选设备模拟，空字符串表示桌面。' },
+        notes: { type: 'string', description: '备注。' },
+      },
+      required: ['name', 'url', 'script'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      const browser = oneOf(optionalString(obj, 'browser'), PLAYWRIGHT_BROWSERS, '浏览器');
+      const device = optionalString(obj, 'device');
+      if (device != null && !(PLAYWRIGHT_DEVICES as readonly string[]).includes(device)) {
+        throw new Error(`设备不支持：${device}`);
+      }
+      return createWorkflowFromScript({
+        name: requiredString(obj, 'name'),
+        url: requiredString(obj, 'url'),
+        script: requiredString(obj, 'script'),
+        browser: browser as PlaywrightBrowser | undefined,
+        device,
+        notes: optionalString(obj, 'notes'),
+      });
+    },
+  },
+  {
+    name: 'playwright_update',
+    description: '更新工作流名称、备注、URL、浏览器或脚本内容。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        name: { type: 'string' },
+        notes: { type: 'string' },
+        url: { type: 'string' },
+        browser: { type: 'string', enum: PLAYWRIGHT_BROWSERS },
+        device: { type: 'string' },
+        script: { type: 'string', description: '替换整个脚本内容。' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      return updateWorkflow({
+        id: requiredString(obj, 'id'),
+        name: optionalString(obj, 'name'),
+        notes: optionalString(obj, 'notes'),
+        url: optionalString(obj, 'url'),
+        browser: oneOf(optionalString(obj, 'browser'), PLAYWRIGHT_BROWSERS, '浏览器') as PlaywrightBrowser | undefined,
+        device: optionalString(obj, 'device'),
+        script: optionalString(obj, 'script'),
+      });
+    },
+  },
+  {
+    name: 'playwright_delete',
+    description: '删除工作流及其脚本/登录态。需 confirm=true。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        confirm: { type: 'boolean', description: '必须为 true 才会删除。' },
+      },
+      required: ['id', 'confirm'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      if (optionalBoolean(obj, 'confirm') !== true) {
+        throw new Error('删除需设置 confirm=true。');
+      }
+      const id = requiredString(obj, 'id');
+      deleteWorkflow(id);
+      return { deleted: true, id };
+    },
+  },
+  {
+    name: 'playwright_record',
+    description: '启动 Playwright Codegen 录制：弹出浏览器供用户操作，关闭窗口后脚本写入工作流。Agent 调用时默认等待录制结束。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        url: { type: 'string', description: '起始 URL。' },
+        browser: { type: 'string', enum: PLAYWRIGHT_BROWSERS },
+        device: { type: 'string' },
+        saveAuth: { type: 'boolean', description: '录制结束时保存登录态。' },
+        loadAuthFromId: { type: 'string', description: '复用已有工作流的登录态。' },
+        notes: { type: 'string' },
+        wait: { type: 'boolean', description: '是否等待录制结束。Agent 默认 true，UI 可 false。' },
+      },
+      required: ['name', 'url'],
+      additionalProperties: false,
+    },
+    run: async (args, ctx) => {
+      const obj = asObject(args);
+      const wait = optionalBoolean(obj, 'wait');
+      return startRecord({
+        name: requiredString(obj, 'name'),
+        url: requiredString(obj, 'url'),
+        browser: oneOf(optionalString(obj, 'browser'), PLAYWRIGHT_BROWSERS, '浏览器') as PlaywrightBrowser | undefined,
+        device: optionalString(obj, 'device'),
+        saveAuth: optionalBoolean(obj, 'saveAuth'),
+        loadAuthFromId: optionalString(obj, 'loadAuthFromId'),
+        notes: optionalString(obj, 'notes'),
+      }, {
+        wait: wait ?? ctx.source === 'agent',
+      });
+    },
+  },
+  {
+    name: 'playwright_play',
+    description: '回放已保存的 Playwright 工作流。Agent 调用时默认等待执行结束并返回结果。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '工作流 ID。' },
+        mode: { type: 'string', enum: PLAYWRIGHT_RUN_MODES, description: 'headed / headless / ui / debug，默认 headed。' },
+        slowMoMs: { type: 'number', description: '放慢毫秒数。' },
+        wait: { type: 'boolean', description: '是否等待结束。Agent 默认 true。' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    run: async (args, ctx) => {
+      const obj = asObject(args);
+      const wait = optionalBoolean(obj, 'wait');
+      return playWorkflow({
+        id: requiredString(obj, 'id'),
+        mode: oneOf(optionalString(obj, 'mode'), PLAYWRIGHT_RUN_MODES, '回放模式') as PlaywrightRunMode | undefined,
+        slowMoMs: optionalNumber(obj, 'slowMoMs'),
+      }, {
+        wait: wait ?? ctx.source === 'agent',
+      });
+    },
+  },
+  {
+    name: 'playwright_stop',
+    description: '停止当前正在进行的录制或回放任务。',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+    run: async () => {
+      await stopJob();
+      return { stopped: true, status: getStudioStatus() };
+    },
+  },
+  {
+    name: 'playwright_install_browsers',
+    description: '安装与当前 Playwright 版本匹配的浏览器（chromium / firefox / webkit / all）。本机 Chrome/Edge 通道通常不需要。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: { type: 'string', enum: ['chromium', 'firefox', 'webkit', 'all'], description: '默认 chromium。' },
+      },
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      const target = oneOf(
+        optionalString(obj, 'target'),
+        ['chromium', 'firefox', 'webkit', 'all'] as const,
+        '安装目标',
+      ) || 'chromium';
+      return installBrowsers(target);
+    },
+  },
+];
+
+const byName = new Map(tools.map((tool) => [tool.name, tool]));
+
+export function listAgentTools(): Array<Pick<ToolDefinition, 'name' | 'description' | 'inputSchema'>> {
+  return tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+}
+
+export async function callTool(name: string, args: unknown, ctx: ToolContext): Promise<unknown> {
+  const tool = byName.get(name);
+  if (!tool) {
+    throw new Error(`未知工具：${name}`);
+  }
+  return tool.run(args, ctx);
+}
