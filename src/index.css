@@ -1305,12 +1305,26 @@ button:disabled { opacity: 0.45; cursor: default; }
   display: flex;
   flex-direction: column;
   font-family: var(--mono), var(--cjk);
+  /* Electron: must claim no-drag so rail drag regions underneath do not swallow clicks. */
+  -webkit-app-region: no-drag;
   background:
     radial-gradient(ellipse 70% 46% at 32% -8%, rgba(74, 222, 128, 0.1), transparent 58%),
     linear-gradient(var(--dot) 1px, transparent 1px),
     linear-gradient(90deg, var(--dot) 1px, transparent 1px),
     var(--bg);
   background-size: auto, 22px 22px, 22px 22px, auto;
+}
+
+/* Welcome covers the rail; disable rail drag / resize hit targets while it is open. */
+.studio.is-welcome .studio-rail,
+.studio.is-welcome .studio-rail button,
+.studio.is-welcome .studio-rail .pill,
+.studio.is-welcome .studio-rail .brand {
+  -webkit-app-region: no-drag;
+}
+
+.studio.is-welcome > .pane-resize {
+  pointer-events: none;
 }
 
 .welcome-top {

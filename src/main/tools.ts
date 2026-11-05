@@ -867,6 +867,10 @@ const tools: ToolDefinition[] = [
           type: 'boolean',
           description: '复用 Studio 持久登录目录（user-data-dir），同一浏览器下次录制保留 Cookie。默认 false。',
         },
+        slowMoMs: {
+          type: 'number',
+          description: '建议回放放慢毫秒数，写入工作流元数据；默认 500。',
+        },
         notes: { type: 'string' },
         wait: { type: 'boolean', description: '是否等待录制结束。Agent 默认 true，UI 可 false。' },
       },
@@ -884,6 +888,7 @@ const tools: ToolDefinition[] = [
         saveAuth: optionalBoolean(obj, 'saveAuth'),
         loadAuthFromId: optionalString(obj, 'loadAuthFromId'),
         usePersistentProfile: optionalBoolean(obj, 'usePersistentProfile'),
+        slowMoMs: optionalNumber(obj, 'slowMoMs'),
         notes: optionalString(obj, 'notes'),
       }, {
         wait: wait ?? ctx.source === 'agent',
@@ -898,7 +903,10 @@ const tools: ToolDefinition[] = [
       properties: {
         id: { type: 'string', description: '工作流 ID。' },
         mode: { type: 'string', enum: PLAYWRIGHT_RUN_MODES, description: 'headed / headless / ui / debug，默认 headed。' },
-        slowMoMs: { type: 'number', description: '放慢毫秒数。' },
+        slowMoMs: {
+          type: 'number',
+          description: '放慢毫秒数；省略则使用工作流记录的 slowMoMs（默认 500）。',
+        },
         wait: { type: 'boolean', description: '是否等待结束。Agent 默认 true。' },
       },
       required: ['id'],

@@ -12,6 +12,7 @@ import {
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { app, shell } from 'electron';
+import { PLAYWRIGHT_DEFAULT_SLOW_MO_MS } from '../shared/playwright';
 import type {
   PlaywrightBrowser,
   PlaywrightPlayRequest,
@@ -157,6 +158,12 @@ function slugify(name: string): string {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function normalizeSlowMoMs(value: unknown, fallback = 0): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.round(n);
 }
 
 function emit(partial: Omit<PlaywrightRunEvent, 'percent'> & { percent?: number }): void {
@@ -591,6 +598,10 @@ export async function startRecord(
   mkdirSync(dir, { recursive: true });
 
   const usePersistentProfile = Boolean(request.usePersistentProfile);
+  const slowMoMs = normalizeSlowMoMs(
+    request.slowMoMs,
+    PLAYWRIGHT_DEFAULT_SLOW_MO_MS,
+  );
   const meta: PlaywrightWorkflowMeta = {
     id,
     name,
@@ -600,6 +611,7 @@ export async function startRecord(
     fileName,
     hasAuth: false,
     usePersistentProfile: usePersistentProfile || undefined,
+    slowMoMs,
     createdAt: nowIso(),
     updatedAt: nowIso(),
     lastRunStatus: 'recording',
@@ -758,13 +770,23 @@ export async function playWorkflow(
     );
   }
 
+  // Prefer explicit request override; otherwise use the workflow's recorded preference.
+  const slowMoMs = request.slowMoMs !== undefined
+    ? normalizeSlowMoMs(request.slowMoMs, 0)
+    : normalizeSlowMoMs(meta.slowMoMs, PLAYWRIGHT_DEFAULT_SLOW_MO_MS);
+  if (meta.slowMoMs !== slowMoMs) {
+    meta.slowMoMs = slowMoMs;
+    meta.updatedAt = nowIso();
+    writeMeta(meta);
+  }
+
   const mode = request.mode || 'headed';
   const { command, prefixArgs } = resolvePlaywrightCli();
   const authFile = authPathFor(meta.id);
   const { configPath, testFilter } = writeRunConfig({
     root,
     meta,
-    slowMoMs: request.slowMoMs,
+    slowMoMs,
     authFile: existsSync(authFile) ? authFile : undefined,
     videoEnabled: ensured.videoEnabled,
   });
@@ -928,6 +950,9 @@ export function updateWorkflow(request: PlaywrightUpdateRequest): PlaywrightWork
   if (typeof request.device === 'string') {
     meta.device = request.device;
   }
+  if (request.slowMoMs !== undefined) {
+    meta.slowMoMs = normalizeSlowMoMs(request.slowMoMs, 0);
+  }
   if (typeof request.script === 'string') {
     writeFileSync(scriptPathFor(meta), request.script, 'utf8');
   }
@@ -1005,6 +1030,7 @@ export function importScriptFile(sourcePath: string, name: string, url: string):
     device: '',
     fileName,
     hasAuth: false,
+    slowMoMs: PLAYWRIGHT_DEFAULT_SLOW_MO_MS,
     createdAt: nowIso(),
     updatedAt: nowIso(),
     lastRunStatus: 'idle',
@@ -1054,6 +1080,7 @@ export function createWorkflowFromScript(input: {
     device: (input.device || '').trim(),
     fileName,
     hasAuth: false,
+    slowMoMs: PLAYWRIGHT_DEFAULT_SLOW_MO_MS,
     createdAt: nowIso(),
     updatedAt: nowIso(),
     lastRunStatus: 'idle',

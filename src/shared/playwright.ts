@@ -4,6 +4,9 @@ export type PlaywrightRunMode = 'headed' | 'headless' | 'ui' | 'debug';
 
 export type PlaywrightJobPhase = 'idle' | 'recording' | 'running' | 'passed' | 'failed' | 'stopped';
 
+/** Default headed-playback slowMo for newly recorded workflows (ms between actions). */
+export const PLAYWRIGHT_DEFAULT_SLOW_MO_MS = 500;
+
 export interface PlaywrightWorkflowMeta {
   id: string;
   name: string;
@@ -14,6 +17,8 @@ export interface PlaywrightWorkflowMeta {
   hasAuth: boolean;
   /** Recorded with Studio persistent browser profile (user-data-dir). */
   usePersistentProfile?: boolean;
+  /** Preferred playback slowMo in ms; filled at record time, updated when user adjusts and plays. */
+  slowMoMs?: number;
   createdAt: string;
   updatedAt: string;
   lastRunAt?: string;
@@ -43,12 +48,15 @@ export interface PlaywrightRecordRequest {
    * Not the user's everyday Chrome window — a dedicated automation profile.
    */
   usePersistentProfile?: boolean;
+  /** Preferred playback slowMo saved onto the workflow (default 500). */
+  slowMoMs?: number;
   notes?: string;
 }
 
 export interface PlaywrightPlayRequest {
   id: string;
   mode?: PlaywrightRunMode;
+  /** Override workflow slowMo for this run; omit to use meta.slowMoMs. */
   slowMoMs?: number;
   workers?: number;
 }
@@ -61,6 +69,7 @@ export interface PlaywrightUpdateRequest {
   url?: string;
   browser?: PlaywrightBrowser;
   device?: string;
+  slowMoMs?: number;
 }
 
 export interface PlaywrightRunEvent {

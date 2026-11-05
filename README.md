@@ -81,10 +81,6 @@ Playwright 类工具：`playwright_record`、`playwright_play`、`playwright_lis
 
 外部 Agent 访问本地文件前需先 `media_grant`，由用户在弹窗中确认。完整说明见 [docs/agent-mcp.md](docs/agent-mcp.md)。
 
-## 导出与付费
-
-导出流程可接入支付校验（支付宝 / 微信占位）。未配置 `PAYMENT_API_BASE` 时走本地 Mock，可模拟支付成功。详见 `.env.example` 与 [docs/plans/2026-09-24-export-payment-design.md](docs/plans/2026-09-24-export-payment-design.md)。
-
 ## 目录
 
 ```text
@@ -93,14 +89,12 @@ src/main/media.ts               FFmpeg 探测与媒体处理
 src/main/playwright-studio.ts   Playwright 录制 / 回放 / 浏览器安装
 src/main/tools.ts               MCP / Agent 工具声明
 src/main/mcp-server.ts          本机 MCP 服务
-src/main/payment.ts             导出支付
 src/main/windows.ts             窗口
-src/preload.ts                  window.media / payment / playwright
+src/preload.ts                  window.media / playwright
 src/renderer/                   MediaDo UI + Playwright Studio
 src/renderer/components/WelcomeScreen.tsx   首页（媒体与自动化分区）
 src/shared/media.ts             媒体协议
 src/shared/playwright.ts        Playwright 协议
-src/shared/payment.ts           支付协议
 src/updater.ts                  自动升级（可选）
 forge.config.ts                 打包；解包 ffmpeg 二进制
 forge/native.ts                 packageAfterCopy 拷贝 runtime 包

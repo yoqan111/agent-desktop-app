@@ -10,6 +10,7 @@ import type {
 } from '../../shared/playwright';
 import {
   PLAYWRIGHT_BROWSERS,
+  PLAYWRIGHT_DEFAULT_SLOW_MO_MS,
   PLAYWRIGHT_DEVICES,
   PLAYWRIGHT_RUN_MODES,
 } from '../../shared/playwright';
@@ -74,7 +75,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
   const [notes, setNotes] = useState('');
 
   const [playMode, setPlayMode] = useState<PlaywrightRunMode>('headed');
-  const [slowMo, setSlowMo] = useState('0');
+  const [slowMo, setSlowMo] = useState(String(PLAYWRIGHT_DEFAULT_SLOW_MO_MS));
   const [scriptDraft, setScriptDraft] = useState('');
   const [nameDraft, setNameDraft] = useState('');
   const [notesDraft, setNotesDraft] = useState('');
@@ -92,15 +93,24 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
     setList(nextList);
   }, []);
 
-  const openDetail = useCallback(async (id: string) => {
+  const resolveSlowMoMs = useCallback((item?: PlaywrightWorkflowDetail | null): number => {
+    if (typeof item?.slowMoMs === 'number' && Number.isFinite(item.slowMoMs) && item.slowMoMs >= 0) {
+      return Math.round(item.slowMoMs);
+    }
+    return PLAYWRIGHT_DEFAULT_SLOW_MO_MS;
+  }, []);
+
+  const openDetail = useCallback(async (id: string): Promise<PlaywrightWorkflowDetail> => {
     const item = await window.playwright.getWorkflow(id);
     setSelectedId(id);
     setDetail(item);
     setScriptDraft(item.script);
     setNameDraft(item.name);
     setNotesDraft(item.notes || '');
+    setSlowMo(String(resolveSlowMoMs(item)));
     setTab('detail');
-  }, []);
+    return item;
+  }, [resolveSlowMoMs]);
 
   useEffect(() => {
     void refresh().catch((err) => {
@@ -163,6 +173,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
         saveAuth,
         loadAuthFromId: loadAuthFromId || undefined,
         usePersistentProfile,
+        slowMoMs: PLAYWRIGHT_DEFAULT_SLOW_MO_MS,
         notes,
       });
       setSelectedId(created.id);
@@ -170,6 +181,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
       setScriptDraft(created.script);
       setNameDraft(created.name);
       setNotesDraft(created.notes || '');
+      setSlowMo(String(resolveSlowMoMs(created)));
       await refresh();
       setTab('detail');
     } catch (err) {
@@ -180,19 +192,28 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
     }
   }
 
-  async function handlePlay(workflowId = selectedId): Promise<void> {
+  async function handlePlay(
+    workflowId = selectedId,
+    options?: { slowMoMs?: number },
+  ): Promise<void> {
     if (!workflowId) return;
     setBusy(true);
     setError('');
     setLogLines([`开始回放：${workflowId} · ${playMode}`]);
     setLivePhase('running');
     try {
-      const slowMoMs = Number(slowMo);
+      const parsed = options?.slowMoMs ?? Number(slowMo);
+      const slowMoMs = Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : PLAYWRIGHT_DEFAULT_SLOW_MO_MS;
+      setSlowMo(String(slowMoMs));
       await window.playwright.play({
         id: workflowId,
         mode: playMode,
-        slowMoMs: Number.isFinite(slowMoMs) && slowMoMs > 0 ? slowMoMs : undefined,
+        slowMoMs,
       });
+      // Keep detail in sync with persisted preference written by playWorkflow.
+      if (selectedId === workflowId) {
+        setDetail((prev) => (prev ? { ...prev, slowMoMs } : prev));
+      }
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : '回放启动失败');
@@ -391,7 +412,9 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                         className="pw-row-btn is-primary"
                         disabled={jobLocked}
                         onClick={() => {
-                          void openDetail(item.id).then(() => handlePlay(item.id));
+                          void openDetail(item.id).then((workflow) => (
+                            handlePlay(workflow.id, { slowMoMs: resolveSlowMoMs(workflow) })
+                          ));
                         }}
                       >
                         回放
@@ -564,7 +587,8 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                   执行回放
                 </button>
                 <p className="hint">
-                  有头：看得见浏览器；无头：适合批量；UI / Debug：逐步排查。Codegen 默认不加断言，失败时先精简脚本再补 expect。
+                  放慢默认沿用本流程录制时记录的值（通常 {PLAYWRIGHT_DEFAULT_SLOW_MO_MS}ms），可手动改；执行回放后会记住你的设置。
+                  有头看得见浏览器；无头适合批量；UI / Debug 逐步排查。
                 </p>
               </div>
               <div className="side-block">
@@ -572,6 +596,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                 <dl className="pw-meta-list">
                   <div><dt>浏览器</dt><dd>{browserLabel(detail.browser)}</dd></div>
                   <div><dt>设备</dt><dd>{detail.device || '桌面'}</dd></div>
+                  <div><dt>放慢</dt><dd>{resolveSlowMoMs(detail)} ms</dd></div>
                   <div><dt>登录态</dt><dd>{detail.hasAuth ? '已保存' : '无'}</dd></div>
                   <div><dt>最近执行</dt><dd>{formatTime(detail.lastRunAt)}</dd></div>
                   <div><dt>状态</dt><dd>{phaseLabel(detail.lastRunStatus)}</dd></div>

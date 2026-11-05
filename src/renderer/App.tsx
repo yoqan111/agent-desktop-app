@@ -871,7 +871,11 @@ export function App() {
   return (
     <>
     <div
-      className={draggingFile ? 'studio is-dropping' : 'studio'}
+      className={[
+        'studio',
+        draggingFile ? 'is-dropping' : '',
+        mainView === 'welcome' ? 'is-welcome' : '',
+      ].filter(Boolean).join(' ')}
       style={{ '--rail-width': `${railWidth}px` } as CSSProperties}
       onDragEnter={onDragEnter}
       onDragOver={onDragOver}
