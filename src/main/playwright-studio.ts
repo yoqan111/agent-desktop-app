@@ -260,7 +260,21 @@ function playwrightBrowsersJson(): string | null {
   return candidates.find((file) => existsSync(file)) || null;
 }
 
-function expectedBrowserRevision(browser: 'chromium' | 'firefox' | 'webkit'): string | null {
+function playwrightBrowsersCacheDir(): string {
+  if (process.env.PLAYWRIGHT_BROWSERS_PATH) {
+    return process.env.PLAYWRIGHT_BROWSERS_PATH;
+  }
+  const home = app.getPath('home');
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Caches', 'ms-playwright');
+  }
+  if (process.platform === 'win32') {
+    return path.join(home, 'AppData', 'Local', 'ms-playwright');
+  }
+  return path.join(home, '.cache', 'ms-playwright');
+}
+
+function expectedBrowserRevision(browser: 'chromium' | 'firefox' | 'webkit' | 'ffmpeg'): string | null {
   const file = playwrightBrowsersJson();
   if (!file) return null;
   try {
@@ -279,8 +293,7 @@ function bundledBrowserInstalled(browser: PlaywrightBrowser): boolean {
     return true;
   }
   const revision = expectedBrowserRevision(browser);
-  const cache = process.env.PLAYWRIGHT_BROWSERS_PATH
-    || path.join(app.getPath('home'), 'Library', 'Caches', 'ms-playwright');
+  const cache = playwrightBrowsersCacheDir();
   if (!existsSync(cache)) {
     return false;
   }
@@ -294,11 +307,85 @@ function bundledBrowserInstalled(browser: PlaywrightBrowser): boolean {
   }
 }
 
+/**
+ * Video artifacts (`video: retain-on-failure`) need Playwright's bundled ffmpeg.
+ * System Chrome / Edge skips browser download, but ffmpeg is still required.
+ */
+function ffmpegInstalled(): boolean {
+  const revision = expectedBrowserRevision('ffmpeg');
+  const cache = playwrightBrowsersCacheDir();
+  if (!existsSync(cache)) {
+    return false;
+  }
+  try {
+    if (revision) {
+      const dir = path.join(cache, `ffmpeg-${revision}`);
+      if (!existsSync(dir)) return false;
+      // INSTALLATION_COMPLETE is written after extract; also accept a present binary.
+      if (existsSync(path.join(dir, 'INSTALLATION_COMPLETE'))) return true;
+      return readdirSync(dir).some((name) => name.startsWith('ffmpeg'));
+    }
+    return readdirSync(cache).some((name) => name.startsWith('ffmpeg-'));
+  } catch {
+    return false;
+  }
+}
+
+function isRuntimeDepInstalled(dep: 'chromium' | 'firefox' | 'webkit' | 'ffmpeg'): boolean {
+  return dep === 'ffmpeg' ? ffmpegInstalled() : bundledBrowserInstalled(dep);
+}
+
+async function ensurePlaywrightRuntime(
+  browser: PlaywrightBrowser,
+): Promise<{ ok: boolean; message: string; videoEnabled: boolean }> {
+  const missing: Array<'chromium' | 'firefox' | 'webkit' | 'ffmpeg'> = [];
+  if (needsBundledBrowser(browser) && !bundledBrowserInstalled(browser)) {
+    missing.push(browser === 'firefox' || browser === 'webkit' ? browser : 'chromium');
+  }
+  // Needed for retain-on-failure video, regardless of browser channel.
+  if (!ffmpegInstalled()) {
+    missing.push('ffmpeg');
+  }
+  if (missing.length === 0) {
+    return { ok: true, message: 'Playwright 运行依赖已就绪。', videoEnabled: true };
+  }
+
+  const { code, output } = await runPlaywrightCommand(['install', ...missing], studioRoot());
+  const stillMissing = missing.filter((item) => !isRuntimeDepInstalled(item));
+  const browserStillMissing = stillMissing.filter((item) => item !== 'ffmpeg');
+  if (browserStillMissing.length > 0) {
+    const detail = output.trim().split(/\r?\n/).slice(-12).join('\n');
+    return {
+      ok: false,
+      message: detail
+        || `缺少 Playwright 浏览器（${browserStillMissing.join(', ')}）。请点击「安装浏览器」，或执行：npx playwright install ${browserStillMissing.join(' ')}`,
+      videoEnabled: false,
+    };
+  }
+
+  const videoEnabled = ffmpegInstalled();
+  if (!videoEnabled) {
+    const detail = output.trim().split(/\r?\n/).slice(-8).join('\n');
+    return {
+      ok: true,
+      message: detail
+        || '未安装 Playwright ffmpeg，本次回放将关闭失败视频录制后继续。可稍后点「安装浏览器」补齐。',
+      videoEnabled: false,
+    };
+  }
+
+  if (code === 0) {
+    return { ok: true, message: `已补齐 Playwright 依赖：${missing.join(', ')}`, videoEnabled: true };
+  }
+  return { ok: true, message: 'Playwright 运行依赖已就绪。', videoEnabled: true };
+}
+
 function writeRunConfig(options: {
   root: string;
   meta: PlaywrightWorkflowMeta;
   slowMoMs?: number;
   authFile?: string;
+  videoEnabled?: boolean;
 }): { configPath: string; testFilter: string } {
   // Keep config under studio root so relative paths stay predictable; testDir must be absolute
   // because Playwright resolves it against the config file location.
@@ -309,6 +396,7 @@ function writeRunConfig(options: {
     ? `storageState: ${JSON.stringify(options.authFile)},`
     : '';
   const projectName = options.meta.browser;
+  const videoMode = options.videoEnabled === false ? 'off' : 'retain-on-failure';
   // Playwright CLI args are RegExp filters against paths under testDir.
   // Use the workflow id only — avoids spaces, Chinese filenames, and "." wildcards in "*.spec.ts".
   const testFilter = options.meta.id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -325,7 +413,7 @@ export default defineConfig({
     ${storageLine}
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
-    video: 'retain-on-failure',
+    video: ${JSON.stringify(videoMode)},
     launchOptions: {
       slowMo: ${slowMo},
     },
@@ -399,12 +487,19 @@ export function setPlaywrightEventSink(sink: EventSink | null): void {
 
 export function getStudioStatus(): PlaywrightStudioStatus {
   const chromiumReady = bundledBrowserInstalled('chromium');
+  const ffmpegReady = ffmpegInstalled();
+  let browsersHint: string;
+  if (chromiumReady && ffmpegReady) {
+    browsersHint = 'Chromium / ffmpeg 已就绪。选「本机 Chrome / Edge」时回放走系统浏览器，仍会使用 Playwright 自带的 ffmpeg 录失败视频。';
+  } else if (!ffmpegReady) {
+    browsersHint = '缺少 Playwright ffmpeg（失败回放视频依赖它）。请点「安装浏览器」补齐；本机 Chrome / Edge 也不能跳过这一步。';
+  } else {
+    browsersHint = '尚未安装与当前 Playwright 匹配的 Chromium，请点「安装浏览器」。本机 Chrome / Edge 可跳过 Chromium，但仍需 ffmpeg。';
+  }
   return {
     rootDir: studioRoot(),
     playwrightReady: playwrightReady(),
-    browsersHint: chromiumReady
-      ? 'Chromium 已就绪。选「本机 Chrome / Edge」时回放走系统浏览器，不依赖 Playwright 缓存。'
-      : '尚未安装与当前 Playwright 匹配的 Chromium，请点「安装浏览器」。本机 Chrome / Edge 可跳过这一步。',
+    browsersHint,
     activeJob: activeJob
       ? {
           kind: activeJob.kind,
@@ -636,15 +731,12 @@ export async function playWorkflow(
   }
 
   // Bundled browsers must match @playwright/test revision (e.g. chromium-1194).
-  // System Chrome / Edge (channel) skip this download.
-  if (needsBundledBrowser(meta.browser) && !bundledBrowserInstalled(meta.browser)) {
-    const target = meta.browser === 'firefox' || meta.browser === 'webkit' ? meta.browser : 'chromium';
-    const ensured = await installBrowsers(target);
-    if (!ensured.ok) {
-      throw new Error(
-        `${ensured.message}\n请先点击「安装浏览器」，或在终端执行：npx playwright install ${target}`,
-      );
-    }
+  // System Chrome / Edge skip browser download, but ffmpeg is still required for video.
+  const ensured = await ensurePlaywrightRuntime(meta.browser);
+  if (!ensured.ok) {
+    throw new Error(
+      `${ensured.message}\n请先点击「安装浏览器」，或在终端执行：npx playwright install chromium ffmpeg`,
+    );
   }
 
   const mode = request.mode || 'headed';
@@ -655,6 +747,7 @@ export async function playWorkflow(
     meta,
     slowMoMs: request.slowMoMs,
     authFile: existsSync(authFile) ? authFile : undefined,
+    videoEnabled: ensured.videoEnabled,
   });
 
   // Pass filter relative to testDir. Absolute paths are treated as RegExp and break discovery.
@@ -674,11 +767,17 @@ export async function playWorkflow(
 
   const runId = randomUUID();
   const logFile = path.join(root, 'runs', `${runId}.log`);
+  const runtimeNote = ensured.videoEnabled
+    ? 'video=retain-on-failure'
+    : 'video=off (ffmpeg missing)';
   writeFileSync(
     logFile,
-    `# play ${meta.id}\nbrowser=${meta.browser}\nscript=${scriptFile}\nfilter=${testFilter}\n$ ${command} ${args.join(' ')}\n\n`,
+    `# play ${meta.id}\nbrowser=${meta.browser}\nscript=${scriptFile}\nfilter=${testFilter}\n${runtimeNote}\n$ ${command} ${args.join(' ')}\n\n`,
     'utf8',
   );
+  if (!ensured.videoEnabled && ensured.message) {
+    writeFileSync(logFile, `${ensured.message}\n\n`, { flag: 'a', encoding: 'utf8' });
+  }
   const waitPromise = options?.wait
     ? registerRunWaiter(runId, options.timeoutMs ?? 30 * 60 * 1000)
     : null;
@@ -708,7 +807,9 @@ export async function playWorkflow(
     runId,
     phase: 'running',
     percent: 10,
-    message: `开始回放 · ${mode}`,
+    message: ensured.videoEnabled
+      ? `开始回放 · ${mode}`
+      : `开始回放 · ${mode}（未检测到 ffmpeg，已关闭失败视频）`,
   });
 
   child.on('error', (error) => {
@@ -849,22 +950,24 @@ export async function installBrowsers(
     return { ok: false, message: '未找到 @playwright/test，请先在项目中安装依赖。' };
   }
   const root = studioRoot();
-  // Skip download when a matching cache already exists AND we only need a quick check —
-  // still prefer an explicit install so the revision matches the locked Playwright version.
-  const browsers = target === 'all' ? ['chromium', 'firefox', 'webkit'] : [target];
+  // Always install ffmpeg alongside browsers — retain-on-failure video depends on it,
+  // including when the workflow uses system Chrome / Edge.
+  const browsers = target === 'all'
+    ? ['chromium', 'firefox', 'webkit', 'ffmpeg']
+    : [target, 'ffmpeg'];
   const { code, output } = await runPlaywrightCommand(['install', ...browsers], root);
   if (code === 0) {
     return {
       ok: true,
       message: target === 'all'
-        ? 'Chromium / Firefox / WebKit 已安装，可开始录制与回放。'
-        : `${browsers[0]} 已安装（与当前 Playwright 版本对齐），可开始录制与回放。`,
+        ? 'Chromium / Firefox / WebKit / ffmpeg 已安装，可开始录制与回放。'
+        : `${browsers.filter((name) => name !== 'ffmpeg').join(', ') || target} 与 ffmpeg 已安装（与当前 Playwright 版本对齐），可开始录制与回放。`,
     };
   }
   const detail = output.trim().split(/\r?\n/).slice(-12).join('\n');
   return {
     ok: false,
-    message: detail || `浏览器安装失败（退出码 ${code}）。本机 Chrome / Edge 通道不需要这步；若用 Chromium 请检查网络后重试。`,
+    message: detail || `浏览器/ffmpeg 安装失败（退出码 ${code}）。请检查网络后重试；本机 Chrome / Edge 可不装 Chromium，但仍需 ffmpeg。`,
   };
 }
 
