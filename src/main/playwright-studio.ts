@@ -46,7 +46,15 @@ function studioRoot(): string {
   mkdirSync(path.join(dir, 'workflows'), { recursive: true });
   mkdirSync(path.join(dir, 'auth'), { recursive: true });
   mkdirSync(path.join(dir, 'runs'), { recursive: true });
+  mkdirSync(path.join(dir, 'browser-profiles'), { recursive: true });
   ensureStudioScaffold(dir);
+  return dir;
+}
+
+/** Dedicated Playwright user-data-dir per browser channel (not the OS daily profile). */
+function persistentProfileDir(browser: PlaywrightBrowser): string {
+  const dir = path.join(studioRoot(), 'browser-profiles', browser);
+  mkdirSync(dir, { recursive: true });
   return dir;
 }
 
@@ -496,10 +504,12 @@ export function getStudioStatus(): PlaywrightStudioStatus {
   } else {
     browsersHint = '尚未安装与当前 Playwright 匹配的 Chromium，请点「安装浏览器」。本机 Chrome / Edge 可跳过 Chromium，但仍需 ffmpeg。';
   }
+  const root = studioRoot();
   return {
-    rootDir: studioRoot(),
+    rootDir: root,
     playwrightReady: playwrightReady(),
     browsersHint,
+    persistentProfilesDir: path.join(root, 'browser-profiles'),
     activeJob: activeJob
       ? {
           kind: activeJob.kind,
@@ -580,6 +590,7 @@ export async function startRecord(
   const dir = workflowDir(id);
   mkdirSync(dir, { recursive: true });
 
+  const usePersistentProfile = Boolean(request.usePersistentProfile);
   const meta: PlaywrightWorkflowMeta = {
     id,
     name,
@@ -588,6 +599,7 @@ export async function startRecord(
     device,
     fileName,
     hasAuth: false,
+    usePersistentProfile: usePersistentProfile || undefined,
     createdAt: nowIso(),
     updatedAt: nowIso(),
     lastRunStatus: 'recording',
@@ -612,6 +624,11 @@ export async function startRecord(
 
   if (device) {
     args.push('--device', device);
+  }
+
+  // Persistent profile keeps cookies across recordings (Studio-owned dir, not daily Chrome).
+  if (usePersistentProfile) {
+    args.push('--user-data-dir', persistentProfileDir(browser));
   }
 
   if (request.loadAuthFromId) {
@@ -657,7 +674,9 @@ export async function startRecord(
     runId,
     phase: 'recording',
     percent: 5,
-    message: '已启动 Codegen，请在弹出的浏览器中操作',
+    message: usePersistentProfile
+      ? `已启动 Codegen（持久登录目录：browser-profiles/${browser}），请在弹出的浏览器中操作`
+      : '已启动 Codegen，请在弹出的浏览器中操作',
   });
 
   child.on('error', (error) => {

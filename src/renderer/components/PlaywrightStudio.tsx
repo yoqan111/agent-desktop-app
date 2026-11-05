@@ -70,6 +70,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
   const [device, setDevice] = useState('');
   const [saveAuth, setSaveAuth] = useState(false);
   const [loadAuthFromId, setLoadAuthFromId] = useState('');
+  const [usePersistentProfile, setUsePersistentProfile] = useState(true);
   const [notes, setNotes] = useState('');
 
   const [playMode, setPlayMode] = useState<PlaywrightRunMode>('headed');
@@ -161,6 +162,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
         device,
         saveAuth,
         loadAuthFromId: loadAuthFromId || undefined,
+        usePersistentProfile,
         notes,
       });
       setSelectedId(created.id);
@@ -372,6 +374,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                         <span>{browserLabel(item.browser)}</span>
                         {item.device ? <span>{item.device}</span> : null}
                         {item.hasAuth ? <span>含登录态</span> : null}
+                        {item.usePersistentProfile ? <span>持久目录</span> : null}
                         <span className={`phase-${item.lastRunStatus || 'idle'}`}>{phaseLabel(item.lastRunStatus)}</span>
                       </div>
                     </div>
@@ -436,6 +439,13 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                   ))}
                 </select>
               </label>
+            </div>
+
+            <div className="pw-auth-block">
+              <div className="pw-auth-head">
+                <strong>登录与会话</strong>
+                <span>决定录制窗口是否记住登录，以及回放能否带上 Cookie</span>
+              </div>
               <label className="field">
                 加载已有登录态
                 <select value={loadAuthFromId} disabled={jobLocked} onChange={(e) => setLoadAuthFromId(e.target.value)}>
@@ -445,10 +455,43 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                   ))}
                 </select>
               </label>
-              <label className="field checkbox-field">
-                <input type="checkbox" checked={saveAuth} disabled={jobLocked} onChange={(e) => setSaveAuth(e.target.checked)} />
-                录制结束时保存登录态（storageState）
-              </label>
+              <div className="pw-option-grid">
+                <label className={`pw-option-card${usePersistentProfile ? ' is-on' : ''}${jobLocked ? ' is-disabled' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={usePersistentProfile}
+                    disabled={jobLocked}
+                    onChange={(e) => setUsePersistentProfile(e.target.checked)}
+                  />
+                  <span className="pw-option-body">
+                    <span className="pw-option-title">
+                      复用持久登录目录
+                      <em>推荐</em>
+                    </span>
+                    <span className="pw-option-desc">
+                      同一浏览器下次录制自动带登录。Studio 专用目录，不是日常 Chrome 窗口
+                      {status?.persistentProfilesDir ? ` · ${browser}` : ''}
+                    </span>
+                  </span>
+                </label>
+                <label className={`pw-option-card${saveAuth ? ' is-on' : ''}${jobLocked ? ' is-disabled' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={saveAuth}
+                    disabled={jobLocked}
+                    onChange={(e) => setSaveAuth(e.target.checked)}
+                  />
+                  <span className="pw-option-body">
+                    <span className="pw-option-title">录制结束时保存登录态</span>
+                    <span className="pw-option-desc">
+                      导出 storageState，供无痕回放复用 Cookie
+                    </span>
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            <div className="pw-form-grid">
               <label className="field field-span">
                 备注
                 <textarea value={notes} disabled={jobLocked} onChange={(e) => setNotes(e.target.value)} rows={3} placeholder="这条流程做什么、账号注意点…" />
@@ -459,8 +502,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                 {busy ? '启动中…' : '开始录制'}
               </button>
               <p className="hint">
-                会弹出浏览器与 Playwright Inspector。在页面上点击、输入即可；关闭录制窗口后脚本写入工作流。
-                默认是有界面录制；选「本机 Chrome」才用系统 Chrome，而不是 Playwright 自带 Chromium。
+                开始后会打开浏览器与 Playwright Inspector；操作完成后关闭录制窗口即可写入脚本。
               </p>
             </div>
           </section>

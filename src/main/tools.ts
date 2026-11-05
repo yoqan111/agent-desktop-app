@@ -863,6 +863,10 @@ const tools: ToolDefinition[] = [
         device: { type: 'string' },
         saveAuth: { type: 'boolean', description: '录制结束时保存登录态。' },
         loadAuthFromId: { type: 'string', description: '复用已有工作流的登录态。' },
+        usePersistentProfile: {
+          type: 'boolean',
+          description: '复用 Studio 持久登录目录（user-data-dir），同一浏览器下次录制保留 Cookie。默认 false。',
+        },
         notes: { type: 'string' },
         wait: { type: 'boolean', description: '是否等待录制结束。Agent 默认 true，UI 可 false。' },
       },
@@ -879,6 +883,7 @@ const tools: ToolDefinition[] = [
         device: optionalString(obj, 'device'),
         saveAuth: optionalBoolean(obj, 'saveAuth'),
         loadAuthFromId: optionalString(obj, 'loadAuthFromId'),
+        usePersistentProfile: optionalBoolean(obj, 'usePersistentProfile'),
         notes: optionalString(obj, 'notes'),
       }, {
         wait: wait ?? ctx.source === 'agent',

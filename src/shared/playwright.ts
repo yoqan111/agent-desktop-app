@@ -12,6 +12,8 @@ export interface PlaywrightWorkflowMeta {
   device: string;
   fileName: string;
   hasAuth: boolean;
+  /** Recorded with Studio persistent browser profile (user-data-dir). */
+  usePersistentProfile?: boolean;
   createdAt: string;
   updatedAt: string;
   lastRunAt?: string;
@@ -35,6 +37,12 @@ export interface PlaywrightRecordRequest {
   loadAuthFromId?: string;
   /** Save storage state after recording finishes (user closes codegen). */
   saveAuth?: boolean;
+  /**
+   * Reuse Studio's persistent browser profile (Playwright --user-data-dir).
+   * Keeps cookies/localStorage across recordings for the same browser.
+   * Not the user's everyday Chrome window — a dedicated automation profile.
+   */
+  usePersistentProfile?: boolean;
   notes?: string;
 }
 
@@ -69,6 +77,8 @@ export interface PlaywrightStudioStatus {
   rootDir: string;
   playwrightReady: boolean;
   browsersHint: string;
+  /** Studio-managed persistent profiles root (per browser subdirs). */
+  persistentProfilesDir: string;
   activeJob: null | {
     kind: 'record' | 'play';
     workflowId: string;

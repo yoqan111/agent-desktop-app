@@ -59,14 +59,25 @@ export function WelcomeScreen({
       <header className="welcome-top">
         <span className="welcome-mark" aria-hidden>M</span>
         <span className="welcome-wordmark">MediaDo</span>
-        <span className="welcome-top-state">
-          <i aria-hidden className={dragging || importing ? 'is-live' : ''} />
-          {importing ? '读取文件' : dragging ? '信号输入' : '待机'}
-        </span>
+        <span className="welcome-top-scope">媒体处理</span>
+        <div className="welcome-top-nav">
+          <button
+            type="button"
+            className="welcome-nav-pw"
+            disabled={importing}
+            onClick={onOpenPlaywright}
+          >
+            Playwright Studio
+          </button>
+          <span className="welcome-top-state">
+            <i aria-hidden className={dragging || importing ? 'is-live' : ''} />
+            {importing ? '读取文件' : dragging ? '信号输入' : '待机'}
+          </span>
+        </div>
       </header>
 
       <div className="welcome-scroll">
-        <section className="welcome-hero">
+        <section className="welcome-hero" aria-label="媒体处理">
           <div className="welcome-finder" data-drag={dragging ? 'on' : 'off'}>
             <div className="finder-margin">
               <span>VIDEO</span>
@@ -108,15 +119,15 @@ export function WelcomeScreen({
           </div>
 
           <div className="welcome-pitch">
-            <p className="welcome-eyebrow">本地 FFmpeg 引擎</p>
+            <p className="welcome-eyebrow">本地 FFmpeg 引擎 · 媒体处理</p>
             <h1>不上云的媒体处理台<span className="welcome-dot">。</span></h1>
             <p className="welcome-lede">
               视频、图片和音频都在本机用 FFmpeg 处理。先生成临时预览，确认满意后再选保存位置，源文件不会被改动。
             </p>
 
             <div className="welcome-pick">
-              <span className="welcome-pick-label">文件类型</span>
-              <div className="welcome-kinds" role="tablist" aria-label="选择要处理的文件类型">
+              <span className="welcome-pick-label">媒体类型</span>
+              <div className="welcome-kinds" role="tablist" aria-label="选择要处理的媒体类型">
                 {KINDS.map((item) => (
                   <button
                     key={item}
@@ -149,40 +160,9 @@ export function WelcomeScreen({
           </div>
         </section>
 
-        <section className="welcome-modules" aria-label="产品模块">
+        <section className="welcome-bench" aria-label="媒体处理工作台">
           <div className="bench-head">
-            <h2>模块</h2>
-            <span className="bench-rule" aria-hidden />
-            <p>媒体处理 · 浏览器自动化</p>
-          </div>
-          <div className="module-grid">
-            <button type="button" className="module-card is-current" disabled={importing}>
-              <span className="module-mark" aria-hidden>M</span>
-              <div>
-                <strong>MediaDo</strong>
-                <span>视频、图片、音频本地处理</span>
-              </div>
-              <em>当前</em>
-            </button>
-            <button
-              type="button"
-              className="module-card"
-              disabled={importing}
-              onClick={onOpenPlaywright}
-            >
-              <span className="module-mark module-mark-pw" aria-hidden>P</span>
-              <div>
-                <strong>Playwright Studio</strong>
-                <span>录制操作路径，管理脚本并一键回放</span>
-              </div>
-              <em>进入</em>
-            </button>
-          </div>
-        </section>
-
-        <section className="welcome-bench">
-          <div className="bench-head">
-            <h2>工作台</h2>
+            <h2>媒体处理</h2>
             <span className="bench-rule" aria-hidden />
             <p>{kindLabel(benchKind)} · {tools.length} 个工具</p>
           </div>
@@ -197,9 +177,31 @@ export function WelcomeScreen({
           </div>
         </section>
 
+        <section className="welcome-automation" aria-label="浏览器自动化">
+          <div className="bench-head">
+            <h2 className="is-pw">浏览器自动化</h2>
+            <span className="bench-rule" aria-hidden />
+            <p>与媒体处理相互独立</p>
+          </div>
+
+          <button
+            type="button"
+            className="automation-card"
+            disabled={importing}
+            onClick={onOpenPlaywright}
+          >
+            <span className="automation-mark" aria-hidden>P</span>
+            <div className="automation-copy">
+              <strong>Playwright Studio</strong>
+              <span>录制浏览器操作路径，管理脚本并一键回放。不依赖视频 / 图片 / 音频素材。</span>
+            </div>
+            <em>进入</em>
+          </button>
+        </section>
+
         <footer className="welcome-foot">
-          <span>FFmpeg 随应用分发，全部处理在本机完成</span>
-          <span>拖入文件可直接开始，会自动切到对应类型</span>
+          <span>FFmpeg 随应用分发，媒体处理全部在本机完成</span>
+          <span>拖入媒体文件可直接开始；自动化请从 Playwright Studio 进入</span>
         </footer>
       </div>
     </div>
