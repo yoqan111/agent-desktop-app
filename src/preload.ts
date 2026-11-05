@@ -32,9 +32,13 @@ import type {
 import { PlaywrightIpc } from './shared/playwright';
 import type {
   PlaywrightApi,
+  PlaywrightAssertRequest,
+  PlaywrightBatchPlayRequest,
+  PlaywrightCaptureRequest,
   PlaywrightPlayRequest,
   PlaywrightRecordRequest,
   PlaywrightRunEvent,
+  PlaywrightScheduleConfig,
   PlaywrightUpdateRequest,
 } from './shared/playwright';
 import { UpdaterIpc } from './shared/updater';
@@ -107,12 +111,22 @@ const playwright: PlaywrightApi = {
   getWorkflow: (id) => ipcRenderer.invoke(PlaywrightIpc.get, id),
   startRecord: (request: PlaywrightRecordRequest) => ipcRenderer.invoke(PlaywrightIpc.record, request),
   play: (request: PlaywrightPlayRequest) => ipcRenderer.invoke(PlaywrightIpc.play, request),
+  playBatch: (request: PlaywrightBatchPlayRequest) => ipcRenderer.invoke(PlaywrightIpc.playBatch, request),
   stopJob: () => ipcRenderer.invoke(PlaywrightIpc.stop),
   updateWorkflow: (request: PlaywrightUpdateRequest) => ipcRenderer.invoke(PlaywrightIpc.update, request),
   deleteWorkflow: (id) => ipcRenderer.invoke(PlaywrightIpc.delete, id),
   openWorkflowFolder: (id) => ipcRenderer.invoke(PlaywrightIpc.openFolder, id),
   revealStudioRoot: () => ipcRenderer.invoke(PlaywrightIpc.revealRoot),
   installBrowsers: () => ipcRenderer.invoke(PlaywrightIpc.install),
+  listArtifacts: (id) => ipcRenderer.invoke(PlaywrightIpc.listArtifacts, id),
+  openTrace: (artifactPath) => ipcRenderer.invoke(PlaywrightIpc.openTrace, artifactPath),
+  revealArtifact: (artifactPath) => ipcRenderer.invoke(PlaywrightIpc.revealArtifact, artifactPath),
+  openArtifactsFolder: (id) => ipcRenderer.invoke(PlaywrightIpc.openArtifactsFolder, id),
+  deleteArtifact: (artifactPath) => ipcRenderer.invoke(PlaywrightIpc.deleteArtifact, artifactPath),
+  injectAsserts: (request: PlaywrightAssertRequest) => ipcRenderer.invoke(PlaywrightIpc.injectAsserts, request),
+  capturePage: (request: PlaywrightCaptureRequest) => ipcRenderer.invoke(PlaywrightIpc.capturePage, request),
+  getSchedule: () => ipcRenderer.invoke(PlaywrightIpc.getSchedule),
+  setSchedule: (config: Partial<PlaywrightScheduleConfig>) => ipcRenderer.invoke(PlaywrightIpc.setSchedule, config),
   onRunEvent: (handler) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: PlaywrightRunEvent) => handler(payload);
     ipcRenderer.on(PlaywrightIpc.event, listener);

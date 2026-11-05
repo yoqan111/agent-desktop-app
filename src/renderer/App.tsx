@@ -41,6 +41,7 @@ import type { CropRect } from './components/CropEditor';
 import { PaymentModal } from './components/PaymentModal';
 import { PlaywrightStudio } from './components/PlaywrightStudio';
 import { ResizeHandle } from './components/ResizeHandle';
+import { ResultAudioPlayer } from './components/ResultAudioPlayer';
 import { ResultVideoPlayer } from './components/ResultVideoPlayer';
 import { TimelineTrim } from './components/TimelineTrim';
 import type { TrimRange } from './components/TimelineTrim';
@@ -859,7 +860,7 @@ export function App() {
       return <img className="result-gif" src={url} alt={job.suggestedName} />;
     }
     if (isAudioFormat(job.format) || job.kind === 'audio') {
-      return <audio className="result-audio" src={url} controls />;
+      return <ResultAudioPlayer src={url} title={job.suggestedName} />;
     }
     return <ResultVideoPlayer src={url} />;
   }
@@ -963,9 +964,11 @@ export function App() {
           <section className="panel main-panel">
             {probe && mainView !== 'result' ? <FileInfo probe={probe} filePath={filePath} /> : null}
             {mainView === 'result' && result && resultUrl ? (
-              <div className="result-stage">
+              <div className={`result-stage${isAudioFormat(result.format) || result.kind === 'audio' ? ' is-audio' : ''}`}>
                 {renderResultPreview(result, resultUrl)}
-                <p className="hint result-hint">临时预览 · {result.suggestedName}</p>
+                {!(isAudioFormat(result.format) || result.kind === 'audio') ? (
+                  <p className="hint result-hint">临时预览 · {result.suggestedName}</p>
+                ) : null}
               </div>
             ) : tab === 'crop' || tab === 'watermark' ? (
               probe && previewUrl ? (

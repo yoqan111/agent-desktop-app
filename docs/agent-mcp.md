@@ -291,6 +291,18 @@ macOS 开发态通常是：
 
 失败时 MCP 的 `isError` 为 `true`，文本是错误原因。
 
+## Playwright Studio 工具（节选）
+
+同一 MCP 也暴露浏览器自动化工具，例如：
+
+- `playwright_list` / `playwright_get` / `playwright_play`
+- `playwright_inject_asserts`：向脚本插入 expect 模板
+- `playwright_capture`：截图或 PDF，归档到产物目录
+- `playwright_play_batch`：按顺序批量回放
+- `playwright_get_schedule` / `playwright_set_schedule`：简易定时回放
+
+这些不走 `media_grant`，操作的是 Studio 工作区内的工作流。
+
 ## 让 Agent 怎么说
 
 接好 MCP 后，可以直接说：

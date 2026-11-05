@@ -14,15 +14,26 @@ import {
   simulatePayOrder,
 } from './main/payment';
 import {
+  capturePage,
   deleteWorkflow,
+  ensureScheduleTimer,
+  getSchedule,
   getStudioStatus,
   getWorkflow,
+  injectAsserts,
   installBrowsers,
+  deleteArtifact,
+  listArtifacts,
   listWorkflows,
+  openArtifactsFolder,
+  openTrace,
   openWorkflowFolder,
+  playBatch,
   playWorkflow,
+  revealArtifact,
   revealStudioRoot,
   setPlaywrightEventSink,
+  setSchedule,
   startRecord,
   stopJob,
   updateWorkflow,
@@ -40,8 +51,12 @@ import { PaymentIpc } from './shared/payment';
 import type { CreatePayOrderRequest, PayProduct } from './shared/payment';
 import { PlaywrightIpc } from './shared/playwright';
 import type {
+  PlaywrightAssertRequest,
+  PlaywrightBatchPlayRequest,
+  PlaywrightCaptureRequest,
   PlaywrightPlayRequest,
   PlaywrightRecordRequest,
+  PlaywrightScheduleConfig,
   PlaywrightUpdateRequest,
 } from './shared/playwright';
 import { UpdaterIpc } from './shared/updater';
@@ -289,6 +304,39 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle(PlaywrightIpc.revealRoot, () => revealStudioRoot());
   ipcMain.handle(PlaywrightIpc.install, () => installBrowsers());
+  ipcMain.handle(PlaywrightIpc.listArtifacts, (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('工作流 ID 无效。');
+    return listArtifacts(id);
+  });
+  ipcMain.handle(PlaywrightIpc.openTrace, (_event, artifactPath: unknown) => {
+    if (typeof artifactPath !== 'string') throw new Error('Trace 路径无效。');
+    return openTrace(artifactPath);
+  });
+  ipcMain.handle(PlaywrightIpc.revealArtifact, (_event, artifactPath: unknown) => {
+    if (typeof artifactPath !== 'string') throw new Error('产物路径无效。');
+    return revealArtifact(artifactPath);
+  });
+  ipcMain.handle(PlaywrightIpc.openArtifactsFolder, (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('工作流 ID 无效。');
+    return openArtifactsFolder(id);
+  });
+  ipcMain.handle(PlaywrightIpc.deleteArtifact, (_event, artifactPath: unknown) => {
+    if (typeof artifactPath !== 'string') throw new Error('产物路径无效。');
+    return deleteArtifact(artifactPath);
+  });
+  ipcMain.handle(PlaywrightIpc.playBatch, (_event, payload: unknown) => {
+    return playBatch(payload as PlaywrightBatchPlayRequest);
+  });
+  ipcMain.handle(PlaywrightIpc.injectAsserts, (_event, payload: unknown) => {
+    return injectAsserts(payload as PlaywrightAssertRequest);
+  });
+  ipcMain.handle(PlaywrightIpc.capturePage, (_event, payload: unknown) => {
+    return capturePage(payload as PlaywrightCaptureRequest);
+  });
+  ipcMain.handle(PlaywrightIpc.getSchedule, () => getSchedule());
+  ipcMain.handle(PlaywrightIpc.setSchedule, (_event, payload: unknown) => {
+    return setSchedule((payload || {}) as Partial<PlaywrightScheduleConfig>);
+  });
 }
 
 app.on('ready', () => {
@@ -305,6 +353,7 @@ app.on('ready', () => {
   void startMcpServer().catch((error) => {
     console.error('startMcpServer', error);
   });
+  ensureScheduleTimer();
   createAppWindow();
 });
 

@@ -4,8 +4,24 @@ export type PlaywrightRunMode = 'headed' | 'headless' | 'ui' | 'debug';
 
 export type PlaywrightJobPhase = 'idle' | 'recording' | 'running' | 'passed' | 'failed' | 'stopped';
 
+export type PlaywrightArtifactKind = 'trace' | 'video' | 'screenshot' | 'pdf' | 'other';
+
+export type PlaywrightAssertTemplate = 'url' | 'title' | 'body' | 'all';
+
+export type PlaywrightCaptureKind = 'screenshot' | 'pdf';
+
 /** Default headed-playback slowMo for newly recorded workflows (ms between actions). */
 export const PLAYWRIGHT_DEFAULT_SLOW_MO_MS = 500;
+
+export interface PlaywrightArtifact {
+  kind: PlaywrightArtifactKind;
+  name: string;
+  path: string;
+  size: number;
+  mtime: string;
+  workflowId: string;
+  runId: string;
+}
 
 export interface PlaywrightWorkflowMeta {
   id: string;
@@ -22,8 +38,11 @@ export interface PlaywrightWorkflowMeta {
   createdAt: string;
   updatedAt: string;
   lastRunAt?: string;
+  lastRunId?: string;
   lastRunStatus?: PlaywrightJobPhase;
   lastRunMessage?: string;
+  /** Count of artifacts from the latest play/capture run. */
+  lastArtifactCount?: number;
   notes?: string;
 }
 
@@ -56,9 +75,44 @@ export interface PlaywrightRecordRequest {
 export interface PlaywrightPlayRequest {
   id: string;
   mode?: PlaywrightRunMode;
+  /** Override workflow browser for this run; omit to use meta.browser. */
+  browser?: PlaywrightBrowser;
   /** Override workflow slowMo for this run; omit to use meta.slowMoMs. */
   slowMoMs?: number;
   workers?: number;
+}
+
+export interface PlaywrightBatchPlayRequest {
+  ids: string[];
+  mode?: PlaywrightRunMode;
+  /** Override browser for every workflow in this batch. */
+  browser?: PlaywrightBrowser;
+  slowMoMs?: number;
+}
+
+export interface PlaywrightCaptureRequest {
+  id: string;
+  kind: PlaywrightCaptureKind;
+  /** Full-page screenshot (ignored for pdf). Default true. */
+  fullPage?: boolean;
+}
+
+export interface PlaywrightAssertRequest {
+  id: string;
+  /** Templates to inject; default all. */
+  templates?: PlaywrightAssertTemplate[];
+}
+
+export interface PlaywrightScheduleConfig {
+  enabled: boolean;
+  /** Interval in minutes (minimum 1). */
+  intervalMinutes: number;
+  workflowIds: string[];
+  mode: PlaywrightRunMode;
+  slowMoMs?: number;
+  lastRunAt?: string;
+  nextRunAt?: string;
+  lastMessage?: string;
 }
 
 export interface PlaywrightUpdateRequest {
@@ -80,6 +134,7 @@ export interface PlaywrightRunEvent {
   message: string;
   line?: string;
   exitCode?: number | null;
+  artifacts?: PlaywrightArtifact[];
 }
 
 export interface PlaywrightStudioStatus {
@@ -88,8 +143,9 @@ export interface PlaywrightStudioStatus {
   browsersHint: string;
   /** Studio-managed persistent profiles root (per browser subdirs). */
   persistentProfilesDir: string;
+  schedule: PlaywrightScheduleConfig;
   activeJob: null | {
-    kind: 'record' | 'play';
+    kind: 'record' | 'play' | 'batch' | 'capture';
     workflowId: string;
     runId: string;
     startedAt: string;
@@ -102,12 +158,29 @@ export interface PlaywrightApi {
   getWorkflow(id: string): Promise<PlaywrightWorkflowDetail>;
   startRecord(request: PlaywrightRecordRequest): Promise<PlaywrightWorkflowDetail>;
   play(request: PlaywrightPlayRequest): Promise<{ runId: string }>;
+  playBatch(request: PlaywrightBatchPlayRequest): Promise<{
+    runId: string;
+    results: Array<{ id: string; phase: PlaywrightJobPhase; message: string }>;
+  }>;
   stopJob(): Promise<void>;
   updateWorkflow(request: PlaywrightUpdateRequest): Promise<PlaywrightWorkflowDetail>;
   deleteWorkflow(id: string): Promise<void>;
   openWorkflowFolder(id: string): Promise<void>;
   revealStudioRoot(): Promise<void>;
   installBrowsers(): Promise<{ ok: boolean; message: string }>;
+  listArtifacts(workflowId: string): Promise<PlaywrightArtifact[]>;
+  openTrace(artifactPath: string): Promise<void>;
+  revealArtifact(artifactPath: string): Promise<void>;
+  openArtifactsFolder(workflowId: string): Promise<void>;
+  deleteArtifact(artifactPath: string): Promise<{ deleted: true; path: string; workflowId: string }>;
+  injectAsserts(request: PlaywrightAssertRequest): Promise<PlaywrightWorkflowDetail>;
+  capturePage(request: PlaywrightCaptureRequest): Promise<{
+    runId: string;
+    artifacts: PlaywrightArtifact[];
+    workflow: PlaywrightWorkflowDetail;
+  }>;
+  getSchedule(): Promise<PlaywrightScheduleConfig>;
+  setSchedule(config: Partial<PlaywrightScheduleConfig>): Promise<PlaywrightScheduleConfig>;
   onRunEvent(handler: (event: PlaywrightRunEvent) => void): () => void;
 }
 
@@ -117,12 +190,22 @@ export const PlaywrightIpc = {
   get: 'pw:get',
   record: 'pw:record',
   play: 'pw:play',
+  playBatch: 'pw:playBatch',
   stop: 'pw:stop',
   update: 'pw:update',
   delete: 'pw:delete',
   openFolder: 'pw:openFolder',
   revealRoot: 'pw:revealRoot',
   install: 'pw:install',
+  listArtifacts: 'pw:listArtifacts',
+  openTrace: 'pw:openTrace',
+  revealArtifact: 'pw:revealArtifact',
+  openArtifactsFolder: 'pw:openArtifactsFolder',
+  deleteArtifact: 'pw:deleteArtifact',
+  injectAsserts: 'pw:injectAsserts',
+  capturePage: 'pw:capturePage',
+  getSchedule: 'pw:getSchedule',
+  setSchedule: 'pw:setSchedule',
   event: 'pw:event',
 } as const;
 
@@ -139,6 +222,13 @@ export const PLAYWRIGHT_RUN_MODES: PlaywrightRunMode[] = [
   'headless',
   'ui',
   'debug',
+];
+
+export const PLAYWRIGHT_ASSERT_TEMPLATES: PlaywrightAssertTemplate[] = [
+  'url',
+  'title',
+  'body',
+  'all',
 ];
 
 export const PLAYWRIGHT_DEVICES = [

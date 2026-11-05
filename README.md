@@ -64,6 +64,11 @@ yarn start
 - **复用持久登录目录**：Studio 专用 `user-data-dir`，同浏览器下次录制可免登
 - **保存 / 加载登录态**：`storageState`，供无痕回放带 Cookie
 - 「安装浏览器」会同时补齐 Playwright 自带的 `ffmpeg`（失败视频依赖）
+- **产物面板**：失败回放保留 Trace / 截图 / 视频，可一键打开 Trace Viewer
+- **断言助手**：一键向脚本插入 `expect` 模板（URL / Title / Body）
+- **页面采集**：对起始 URL 截图或导出 PDF，归档到产物目录
+- **批量回放**：勾选多条工作流顺序执行
+- **简易定时**：按间隔分钟自动批量回放（应用保持运行时生效）
 
 ## Agent / MCP
 
@@ -77,7 +82,7 @@ MediaDo MCP http://127.0.0.1:47321/mcp
 
 媒体类工具（节选）：`media_grant`、`media_probe`、`media_convert`、`media_crop`、`media_gif`、`media_enhance_hd`、`media_denoise_audio`、`media_remove_watermark`、`media_adjust` 等。
 
-Playwright 类工具：`playwright_record`、`playwright_play`、`playwright_list`、`playwright_install_browsers` 等。
+Playwright 类工具：`playwright_record`、`playwright_play`、`playwright_play_batch`、`playwright_inject_asserts`、`playwright_capture`、`playwright_get_schedule` / `playwright_set_schedule`、`playwright_list`、`playwright_install_browsers` 等。
 
 外部 Agent 访问本地文件前需先 `media_grant`，由用户在弹窗中确认。完整说明见 [docs/agent-mcp.md](docs/agent-mcp.md)。
 

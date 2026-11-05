@@ -21,13 +21,22 @@ import {
 } from './media';
 import { assertAgentPath, grantInput } from './access';
 import {
+  capturePage,
   createWorkflowFromScript,
+  deleteArtifact,
   deleteWorkflow,
+  getSchedule,
   getStudioStatus,
   getWorkflow,
+  injectAsserts,
   installBrowsers,
+  listArtifacts,
   listWorkflows,
+  openTrace,
+  playBatch,
   playWorkflow,
+  revealArtifact,
+  setSchedule,
   startRecord,
   stopJob,
   updateWorkflow,
@@ -81,12 +90,15 @@ import {
   VIDEO_FORMATS,
 } from '../shared/media';
 import {
+  PLAYWRIGHT_ASSERT_TEMPLATES,
   PLAYWRIGHT_BROWSERS,
   PLAYWRIGHT_DEVICES,
   PLAYWRIGHT_RUN_MODES,
 } from '../shared/playwright';
 import type {
+  PlaywrightAssertTemplate,
   PlaywrightBrowser,
+  PlaywrightCaptureKind,
   PlaywrightRunMode,
 } from '../shared/playwright';
 
@@ -903,6 +915,11 @@ const tools: ToolDefinition[] = [
       properties: {
         id: { type: 'string', description: '工作流 ID。' },
         mode: { type: 'string', enum: PLAYWRIGHT_RUN_MODES, description: 'headed / headless / ui / debug，默认 headed。' },
+        browser: {
+          type: 'string',
+          enum: PLAYWRIGHT_BROWSERS,
+          description: '覆盖工作流浏览器；本机 Chrome 用 chrome，本机 Edge 用 msedge。',
+        },
         slowMoMs: {
           type: 'number',
           description: '放慢毫秒数；省略则使用工作流记录的 slowMoMs（默认 500）。',
@@ -918,6 +935,7 @@ const tools: ToolDefinition[] = [
       return playWorkflow({
         id: requiredString(obj, 'id'),
         mode: oneOf(optionalString(obj, 'mode'), PLAYWRIGHT_RUN_MODES, '回放模式') as PlaywrightRunMode | undefined,
+        browser: oneOf(optionalString(obj, 'browser'), PLAYWRIGHT_BROWSERS, '浏览器') as PlaywrightBrowser | undefined,
         slowMoMs: optionalNumber(obj, 'slowMoMs'),
       }, {
         wait: wait ?? ctx.source === 'agent',
@@ -955,6 +973,222 @@ const tools: ToolDefinition[] = [
         '安装目标',
       ) || 'chromium';
       return installBrowsers(target);
+    },
+  },
+  {
+    name: 'playwright_list_artifacts',
+    description: '列出某工作流回放/采集产生的产物（Trace / 视频 / 截图 / PDF）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '工作流 ID。' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      const id = requiredString(obj, 'id');
+      return { id, artifacts: listArtifacts(id) };
+    },
+  },
+  {
+    name: 'playwright_open_trace',
+    description: '用 Playwright Trace Viewer 打开指定 trace.zip。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'trace.zip 绝对路径。' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      const file = requiredString(obj, 'path');
+      await openTrace(file);
+      return { opened: true, path: file };
+    },
+  },
+  {
+    name: 'playwright_reveal_artifact',
+    description: '在系统文件管理器中定位某个回放产物。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '产物绝对路径。' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      const file = requiredString(obj, 'path');
+      await revealArtifact(file);
+      return { revealed: true, path: file };
+    },
+  },
+  {
+    name: 'playwright_delete_artifact',
+    description: '删除某个回放/采集产物文件（仅限 Studio 产物目录）。需 confirm=true。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '产物绝对路径。' },
+        confirm: { type: 'boolean', description: '必须为 true 才会删除。' },
+      },
+      required: ['path', 'confirm'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      if (optionalBoolean(obj, 'confirm') !== true) {
+        throw new Error('删除需设置 confirm=true。');
+      }
+      return deleteArtifact(requiredString(obj, 'path'));
+    },
+  },
+  {
+    name: 'playwright_inject_asserts',
+    description: '向工作流脚本插入 expect 断言模板（url / title / body / all），可重复调用覆盖同一标记块。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '工作流 ID。' },
+        templates: {
+          type: 'array',
+          items: { type: 'string', enum: PLAYWRIGHT_ASSERT_TEMPLATES },
+          description: '断言模板列表，默认 ["all"]。',
+        },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      const templatesRaw = obj.templates;
+      let templates: PlaywrightAssertTemplate[] | undefined;
+      if (Array.isArray(templatesRaw)) {
+        templates = templatesRaw.map((item) => {
+          if (typeof item !== 'string') throw new Error('templates 项必须是字符串。');
+          return oneOf(item, PLAYWRIGHT_ASSERT_TEMPLATES, '断言模板') as PlaywrightAssertTemplate;
+        });
+      }
+      return injectAsserts({
+        id: requiredString(obj, 'id'),
+        templates,
+      });
+    },
+  },
+  {
+    name: 'playwright_capture',
+    description: '打开工作流起始 URL，截图或导出 PDF，归档到产物目录。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: '工作流 ID。' },
+        kind: { type: 'string', enum: ['screenshot', 'pdf'], description: '默认 screenshot。PDF 仅 Chromium/Chrome/Edge。' },
+        fullPage: { type: 'boolean', description: '截图是否整页，默认 true。' },
+      },
+      required: ['id'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      const kind = (oneOf(optionalString(obj, 'kind'), ['screenshot', 'pdf'] as const, '采集类型')
+        || 'screenshot') as PlaywrightCaptureKind;
+      return capturePage({
+        id: requiredString(obj, 'id'),
+        kind,
+        fullPage: optionalBoolean(obj, 'fullPage'),
+      });
+    },
+  },
+  {
+    name: 'playwright_play_batch',
+    description: '按顺序批量回放多个工作流。Agent 默认等待全部结束。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '工作流 ID 列表。',
+        },
+        mode: { type: 'string', enum: PLAYWRIGHT_RUN_MODES, description: '默认 headless。' },
+        browser: {
+          type: 'string',
+          enum: PLAYWRIGHT_BROWSERS,
+          description: '覆盖本批工作流浏览器；本机 Chrome 用 chrome。',
+        },
+        slowMoMs: { type: 'number' },
+        wait: { type: 'boolean', description: '是否等待全部结束。Agent 默认 true。' },
+      },
+      required: ['ids'],
+      additionalProperties: false,
+    },
+    run: async (args, ctx) => {
+      const obj = asObject(args);
+      const idsRaw = obj.ids;
+      if (!Array.isArray(idsRaw) || idsRaw.length === 0) {
+        throw new Error('ids 不能为空。');
+      }
+      const ids = idsRaw.map((item) => {
+        if (typeof item !== 'string' || !item.trim()) throw new Error('ids 项必须是非空字符串。');
+        return item.trim();
+      });
+      const wait = optionalBoolean(obj, 'wait');
+      return playBatch({
+        ids,
+        mode: oneOf(optionalString(obj, 'mode'), PLAYWRIGHT_RUN_MODES, '回放模式') as PlaywrightRunMode | undefined,
+        browser: oneOf(optionalString(obj, 'browser'), PLAYWRIGHT_BROWSERS, '浏览器') as PlaywrightBrowser | undefined,
+        slowMoMs: optionalNumber(obj, 'slowMoMs'),
+      }, {
+        wait: wait ?? ctx.source === 'agent',
+      });
+    },
+  },
+  {
+    name: 'playwright_get_schedule',
+    description: '读取简易定时回放配置（间隔、工作流列表、上次/下次执行）。',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      additionalProperties: false,
+    },
+    run: async () => getSchedule(),
+  },
+  {
+    name: 'playwright_set_schedule',
+    description: '设置简易定时回放：按间隔分钟批量执行选定工作流。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean' },
+        intervalMinutes: { type: 'number', description: '间隔分钟，最小 1。' },
+        workflowIds: { type: 'array', items: { type: 'string' } },
+        mode: { type: 'string', enum: PLAYWRIGHT_RUN_MODES },
+        slowMoMs: { type: 'number' },
+      },
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      const workflowIdsRaw = obj.workflowIds;
+      let workflowIds: string[] | undefined;
+      if (Array.isArray(workflowIdsRaw)) {
+        workflowIds = workflowIdsRaw.map((item) => {
+          if (typeof item !== 'string' || !item.trim()) throw new Error('workflowIds 项必须是非空字符串。');
+          return item.trim();
+        });
+      }
+      return setSchedule({
+        enabled: optionalBoolean(obj, 'enabled'),
+        intervalMinutes: optionalNumber(obj, 'intervalMinutes'),
+        workflowIds,
+        mode: oneOf(optionalString(obj, 'mode'), PLAYWRIGHT_RUN_MODES, '回放模式') as PlaywrightRunMode | undefined,
+        slowMoMs: optionalNumber(obj, 'slowMoMs'),
+      });
     },
   },
 ];

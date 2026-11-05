@@ -125,7 +125,7 @@ async function handleRpc(message: JsonRpcRequest): Promise<unknown> {
       serverInfo: {
         name: 'mediado',
         version: app.getVersion(),
-        description: 'MediaDo media tools + Playwright Studio (record / play / manage workflows)',
+        description: 'MediaDo media tools + Playwright Studio (record / assert / capture / batch / schedule / play)',
       },
     };
   }
