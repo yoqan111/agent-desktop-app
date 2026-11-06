@@ -1357,7 +1357,11 @@ const tools: ToolDefinition[] = [
           description: '键值对，如 {"0":"https://...","邮箱":"a@b.com","密码":"xxx"} 或 {"fill-1":"新值"}。',
           additionalProperties: { type: 'string' },
         },
-        mode: { type: 'string', enum: PLAYWRIGHT_RUN_MODES },
+        mode: {
+          type: 'string',
+          enum: PLAYWRIGHT_RUN_MODES,
+          description: '默认 headless（无头）。仅当用户勾选「有头窗口」或明确要求时用 headed。',
+        },
         browser: { type: 'string', enum: PLAYWRIGHT_BROWSERS },
         slowMoMs: { type: 'number' },
         recordHar: { type: 'boolean' },
@@ -1382,14 +1386,17 @@ const tools: ToolDefinition[] = [
         else if (typeof value === 'number' || typeof value === 'boolean') params[key] = String(value);
       }
       const wait = optionalBoolean(obj, 'wait');
+      const mode = (oneOf(optionalString(obj, 'mode'), PLAYWRIGHT_RUN_MODES, '回放模式') as PlaywrightRunMode | undefined)
+        || 'headless';
       return runWithParams({
         workflowId: requiredString(obj, 'workflowId'),
         params,
-        mode: oneOf(optionalString(obj, 'mode'), PLAYWRIGHT_RUN_MODES, '回放模式') as PlaywrightRunMode | undefined,
+        mode,
         browser: oneOf(optionalString(obj, 'browser'), PLAYWRIGHT_BROWSERS, '浏览器') as PlaywrightBrowser | undefined,
         slowMoMs: optionalNumber(obj, 'slowMoMs'),
         recordHar: optionalBoolean(obj, 'recordHar'),
         persistScript: optionalBoolean(obj, 'persistScript'),
+        source: ctx.source === 'agent' ? 'agent' : 'manual',
       }, {
         wait: wait ?? ctx.source === 'agent',
       });

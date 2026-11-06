@@ -54,7 +54,6 @@ import {
   getWorkflow,
   listArtifacts,
   listScriptSteps,
-  runWithParams,
 } from './playwright-studio';
 import type { PlaywrightRunMode, PlaywrightScriptStep } from '../shared/playwright';
 
@@ -1351,14 +1350,6 @@ function buildAnalyzePrompt(input: {
   mode?: AgentAnalyzeMode;
   baselineSummary?: string;
   workflowId: string;
-  autoRunResult?: {
-    runId: string;
-    phase: string;
-    message: string;
-    playMode: string;
-    applied?: Array<{ stepId: string; from: string; to: string }>;
-    params?: Record<string, string>;
-  };
   scriptSteps?: PlaywrightScriptStep[];
   headed?: boolean;
 }): string {
@@ -1421,57 +1412,39 @@ function buildAnalyzePrompt(input: {
       '4. 必要时调用 playwright_compare_baseline、playwright_list_artifacts、playwright_get。',
       '5. 调用 playwright_save_report（kind=anomaly）保存异常分析报告。',
     );
-  } else if (mode === 'auto-run') {
+  } else if (mode === 'auto-run' || mode === 'param-run') {
+    const preferredMode = resolveAutoRunPlayMode(input.note, input.headed);
+    const headedChosen = preferredMode === 'headed' || preferredMode === 'debug' || preferredMode === 'ui';
+    const parsedHint = parseParamsFromNote(input.note);
     lines.push(
       '',
-      '## 任务：录制步骤自动执行（默认无头，不打开有头回放窗口）',
-      'Studio 已直接按录制脚本执行真实页面操作（goto/click/fill/submit），并根据 Prompt 替换了相关参数。',
-      '这不是让用户点「回放」按钮，而是后台按步骤自动跑；默认 headless。',
-      '你的职责是解读执行结果与参数替换情况。',
+      mode === 'auto-run'
+        ? '## 任务：录制步骤自动执行（经 Agent 调起）'
+        : '## 任务：参数化执行录制步骤（经 Agent 调起）',
+      '用户会在 Prompt 里给出本次参数；你必须先解析 Prompt，再调用工具执行自动化，不要只口头描述。',
+      '默认用无头窗口（headless）执行录制回放步骤；只有用户勾选「有头窗口」或明确要求时才用 headed。',
+      `本次浏览器模式要求：mode=${preferredMode}${headedChosen ? '（有头，打开可见窗口）' : '（无头，不打开可见窗口）'}。`,
+      '',
+      '## 可参数化步骤清单',
+      formatStepsForPrompt(input.scriptSteps || []),
     );
-    if (input.scriptSteps?.length) {
-      lines.push('', '## 录制步骤（执行前）', formatStepsForPrompt(input.scriptSteps));
-    }
-    if (input.autoRunResult) {
+    if (Object.keys(parsedHint).length) {
       lines.push(
         '',
-        '## 本次自动执行结果',
-        `playMode：${input.autoRunResult.playMode}`,
-        `runId：${input.autoRunResult.runId || '-'}`,
-        `phase：${input.autoRunResult.phase}`,
-        `message：${input.autoRunResult.message}`,
-        `Prompt 解析参数：${JSON.stringify(input.autoRunResult.params || {})}`,
-        `已替换：${(input.autoRunResult.applied || []).map((item) => `${item.stepId}: ${JSON.stringify(item.from)} → ${JSON.stringify(item.to)}`).join('；') || '无（沿用录制原值）'}`,
+        '## Prompt 初解析（供参考，可修正）',
+        JSON.stringify(parsedHint, null, 2),
       );
     }
     lines.push(
       '',
-      '请完成：',
-      '1. 说明本次按哪些录制步骤自动操作了真实页面，以及哪些字段被 Prompt 参数替换。',
-      '2. 根据 phase/message 判断是否成功。',
-      '3. 若失败或参数未映射全：调用 playwright_list_steps，再 playwright_run_with_params（可 mode=headless）补跑最多 1 次。',
-      '4. 若成功：说明可用于重复劳动自动化；下次只需改 Prompt 参数即可。',
-      '5. 可选：playwright_save_report（kind=general）保存执行报告。',
-      '不要默认导出 PDF；不要要求用户去点「回放」。',
-    );
-  } else if (mode === 'param-run') {
-    const preferredMode = resolveAutoRunPlayMode(input.note, input.headed);
-    lines.push(
-      '',
-      '## 任务：参数化执行录制步骤',
-      '用户已录制打开页面 / 填表 / 提交等操作。现在要用 Prompt 里的「本次关键信息」替换脚本中的值，再自动执行。',
-      '可见浏览器由用户选择：有头=headed，无头=headless（默认无头，不必为了「回放」而开窗口）。',
-      '',
-      '## 可参数化步骤清单',
-      formatStepsForPrompt(input.scriptSteps || []),
-      '',
       '请严格按以下步骤：',
       '1. 阅读用户 Prompt，提取本次要填入的信息（URL、账号、密码、表单字段等）。',
-      '2. 把信息映射到上面的 step.id / index / hint（也可用 邮箱/密码/标题/url 等别名）。',
-      `3. 必须调用 playwright_run_with_params（workflowId + params + mode=${preferredMode}）。`,
-      '4. 若映射不确定：先 playwright_list_steps 复核，再执行；不要只口头描述。',
+      '2. 把信息映射到上面的 step.id / index / hint（也可用 邮箱/密码/标题/url 等别名）；无参数时可传空对象 {}。',
+      `3. 必须调用 playwright_run_with_params（workflowId=${input.workflowId} + params + mode=${preferredMode}）。`,
+      '4. 若映射不确定：先 playwright_list_steps 复核，再执行；不要要求用户去点「回放」。',
       '5. 执行后汇报：替换了哪些字段、执行结果、失败原因；失败可修正 params 再跑最多 1 次。',
       'persistScript 默认 false（只影响本次执行，不改坏录制模板）。',
+      '不要默认导出 PDF。',
     );
   } else {
     lines.push(
@@ -1535,27 +1508,18 @@ export async function analyzeWorkflow(
     || (request.capturePdf !== false && analyzeMode === 'general');
   let pdfPath: string | undefined;
   phase = 'running';
+  const preferredPlayMode = resolveAutoRunPlayMode(request.note, request.headed);
   emit({
     type: 'status',
     phase,
-    message: analyzeMode === 'auto-run'
-      ? '正在按录制步骤无头执行（替换 Prompt 参数，不打开回放窗口）…'
-      : analyzeMode === 'param-run'
-        ? '正在解析可参数化步骤，准备按 Prompt 注入后执行…'
-        : (shouldCapture ? '正在导出 PDF…' : `准备${analyzeModeLabel(analyzeMode)}…`),
+    message: (analyzeMode === 'auto-run' || analyzeMode === 'param-run')
+      ? `正在把 Prompt 交给 Agent，由其调起自动化（${preferredPlayMode === 'headless' ? '无头' : '有头'}）…`
+      : (shouldCapture ? '正在导出 PDF…' : `准备${analyzeModeLabel(analyzeMode)}…`),
     workflowId,
     sessionId,
     chatSessionId: chatSession.id,
   });
 
-  let autoRunResult: {
-    runId: string;
-    phase: string;
-    message: string;
-    playMode: string;
-    applied?: Array<{ stepId: string; from: string; to: string }>;
-    params?: Record<string, string>;
-  } | undefined;
   let scriptSteps: PlaywrightScriptStep[] | undefined;
 
   if (analyzeMode === 'param-run' || analyzeMode === 'auto-run') {
@@ -1563,59 +1527,6 @@ export async function analyzeWorkflow(
       scriptSteps = listScriptSteps(detail.id);
     } catch {
       scriptSteps = [];
-    }
-  }
-
-  if (analyzeMode === 'auto-run') {
-    const playMode = resolveAutoRunPlayMode(request.note, request.headed);
-    const params = parseParamsFromNote(request.note);
-    try {
-      const played = await runWithParams({
-        workflowId: detail.id,
-        params,
-        mode: playMode,
-        browser: detail.browser,
-        slowMoMs: detail.slowMoMs,
-        persistScript: false,
-      }, {
-        wait: true,
-        timeoutMs: 30 * 60 * 1000,
-      });
-      const runEvent = played.runEvent;
-      autoRunResult = {
-        runId: played.runId,
-        phase: runEvent?.phase || 'passed',
-        message: runEvent?.message || '自动执行完成',
-        playMode,
-        applied: played.applied,
-        params,
-      };
-      emit({
-        type: 'status',
-        phase: 'running',
-        message: `已按录制步骤${playMode === 'headless' ? '无头' : ''}执行（${autoRunResult.phase}，替换 ${played.applied.length} 处），正在汇总…`,
-        workflowId,
-        sessionId,
-        chatSessionId: chatSession.id,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '自动执行失败';
-      autoRunResult = {
-        runId: '',
-        phase: 'failed',
-        message,
-        playMode,
-        applied: [],
-        params,
-      };
-      emit({
-        type: 'status',
-        phase: 'running',
-        message: `自动执行未完成：${message}，将交由 Agent 诊断`,
-        workflowId,
-        sessionId,
-        chatSessionId: chatSession.id,
-      });
     }
   }
 
@@ -1659,34 +1570,25 @@ export async function analyzeWorkflow(
     mode: analyzeMode,
     baselineSummary,
     workflowId: detail.id,
-    autoRunResult,
     scriptSteps,
     headed: request.headed,
   });
 
   const userPrompt = request.note?.trim() || '';
-  const headedHint = request.headed === true ? '有头窗口' : '无头执行';
-  const modeLine = analyzeMode === 'auto-run'
+  const headedHint = preferredPlayMode === 'headless' ? '无头执行' : '有头窗口';
+  const modeLine = (analyzeMode === 'auto-run' || analyzeMode === 'param-run')
     ? [
-      '分析模式：录制自动执行',
-      autoRunResult
-        ? `已直接按步骤执行（${autoRunResult.playMode} · ${autoRunResult.phase} · 替换 ${autoRunResult.applied?.length || 0} 处）`
-        : '准备按录制步骤执行',
+      `分析模式：${analyzeModeLabel(analyzeMode)}`,
+      `可替换步骤 ${scriptSteps?.length || 0} 个`,
       headedHint,
+      'Prompt → Agent → playwright_run_with_params',
     ].join(' · ')
-    : analyzeMode === 'param-run'
-      ? [
-        '分析模式：参数化执行',
-        `可替换步骤 ${scriptSteps?.length || 0} 个`,
-        headedHint,
-        '请根据 Prompt 注入关键信息后执行',
-      ].join(' · ')
-      : [
-        `分析模式：${analyzeModeLabel(analyzeMode)}`,
-        shouldCapture
-          ? (pdfPath ? `PDF：${path.basename(pdfPath)}` : '本次未能导出 PDF，将结合脚本与已有产物分析')
-          : '未导出 PDF（脚本 / 产物 / 基线分析）',
-      ].join(' · ');
+    : [
+      `分析模式：${analyzeModeLabel(analyzeMode)}`,
+      shouldCapture
+        ? (pdfPath ? `PDF：${path.basename(pdfPath)}` : '本次未能导出 PDF，将结合脚本与已有产物分析')
+        : '未导出 PDF（脚本 / 产物 / 基线分析）',
+    ].join(' · ');
   const visible = userPrompt
     ? [
       userPrompt,
@@ -1696,11 +1598,9 @@ export async function analyzeWorkflow(
       modeLine,
     ].join('\n')
     : [
-      analyzeMode === 'auto-run'
-        ? `请汇总工作流「${detail.name}」的自动执行结果（已按录制步骤${request.headed ? '有头' : '无头'}执行并替换 Prompt 参数）`
-        : analyzeMode === 'param-run'
-          ? `请根据我提供的关键信息，参数化执行工作流「${detail.name}」的录制步骤（${headedHint}）`
-          : `请对工作流「${detail.name}」做${analyzeModeLabel(analyzeMode)}`,
+      (analyzeMode === 'auto-run' || analyzeMode === 'param-run')
+        ? `请根据 Prompt 参数调起工作流「${detail.name}」的录制步骤自动执行（${headedHint}）`
+        : `请对工作流「${detail.name}」做${analyzeModeLabel(analyzeMode)}`,
       modeLine,
     ].join('\n');
 

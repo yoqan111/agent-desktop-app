@@ -90,9 +90,13 @@ function analyzeModeHint(mode: AgentAnalyzeMode): string {
   if (mode === 'test-enhance') return '补断言、稳定选择器与可回归建议';
   if (mode === 'business-doc') return '梳理业务路径并生成说明文档';
   if (mode === 'anomaly') return '对比基线，定位异常与回归风险';
-  if (mode === 'auto-run') return '按录制步骤自动执行；可选手动开有头窗口';
-  if (mode === 'param-run') return 'Prompt 参数替换后执行；可选手动开有头窗口';
+  if (mode === 'auto-run') return '把 Prompt 交给 Agent，由其调起录制步骤（默认无头）';
+  if (mode === 'param-run') return 'Agent 解析 Prompt 参数后执行（默认无头，可勾选有头）';
   return '通读脚本、产物与日志给出总览';
+}
+
+function isExecutionMode(mode: AgentAnalyzeMode): boolean {
+  return mode === 'auto-run' || mode === 'param-run';
 }
 
 function modelValue(model: AgentModelInfo): string {
@@ -1022,7 +1026,11 @@ export function AgentChatPanel({
     setError('');
 
     if (shouldAnalyze) {
-      await startAnalyze(false, text, { workflow: target, mode: panelAnalyzeMode });
+      await startAnalyze(false, text, {
+        workflow: target,
+        mode: panelAnalyzeMode,
+        headed: panelAnalyzeHeaded,
+      });
       return;
     }
 
@@ -1793,63 +1801,78 @@ export function AgentChatPanel({
             onSubmit={(e) => { void handleSend(e); }}
           >
             <div className="agent-composer-toolbar">
-              <label className="agent-mode-field">
-                <span>分析模式</span>
-                <PwSelect
-                  className="agent-mode-select"
-                  value={panelAnalyzeMode}
-                  disabled={busy}
-                  placement="up"
-                  aria-label="分析模式"
-                  onChange={(value) => setPanelAnalyzeMode(value as AgentAnalyzeMode)}
-                  options={PLAYWRIGHT_ANALYZE_MODES.map((mode) => ({
-                    value: mode,
-                    label: analyzeModeLabel(mode),
-                    description: analyzeModeHint(mode),
-                  }))}
-                />
-              </label>
-              {(panelAnalyzeMode === 'auto-run' || panelAnalyzeMode === 'param-run') ? (
-                <label className="checkbox-field agent-headed-field" title="勾选后打开可见浏览器执行录制步骤">
-                  <input
-                    type="checkbox"
-                    checked={panelAnalyzeHeaded}
+              <div className="agent-composer-controls">
+                <label className="agent-mode-field">
+                  <span>分析模式</span>
+                  <PwSelect
+                    className="agent-mode-select"
+                    value={panelAnalyzeMode}
                     disabled={busy}
-                    onChange={(event) => setPanelAnalyzeHeaded(event.target.checked)}
+                    placement="up"
+                    aria-label="分析模式"
+                    onChange={(value) => setPanelAnalyzeMode(value as AgentAnalyzeMode)}
+                    options={PLAYWRIGHT_ANALYZE_MODES.map((mode) => ({
+                      value: mode,
+                      label: analyzeModeLabel(mode),
+                      description: analyzeModeHint(mode),
+                    }))}
                   />
-                  <span>有头窗口</span>
                 </label>
-              ) : null}
+                {isExecutionMode(panelAnalyzeMode) ? (
+                  <label
+                    className={`agent-headed-toggle${panelAnalyzeHeaded ? ' is-on' : ''}`}
+                    title="勾选后：Agent 调起自动化时使用有头窗口；默认无头"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={panelAnalyzeHeaded}
+                      disabled={busy}
+                      onChange={(event) => setPanelAnalyzeHeaded(event.target.checked)}
+                    />
+                    <span>有头窗口</span>
+                  </label>
+                ) : null}
+              </div>
 
               <div className="agent-composer-actions">
                 <button
                   type="button"
                   className="btn-primary"
                   disabled={busy || !effectiveWorkflowId || !status?.hasApiKey}
-                  title={`按「${analyzeModeLabel(panelAnalyzeMode)}」分析脚本 / 产物 / 基线（不导出 PDF）`}
+                  title={
+                    isExecutionMode(panelAnalyzeMode)
+                      ? `把输入框 Prompt 交给 Agent，由其调起自动化（${panelAnalyzeHeaded ? '有头' : '无头'}）`
+                      : `按「${analyzeModeLabel(panelAnalyzeMode)}」分析（不导出 PDF）`
+                  }
                   onClick={() => {
-                    void startAnalyze(false, analyzeNote, {
+                    void startAnalyze(false, draft.trim() || analyzeNote, {
                       mode: panelAnalyzeMode,
                       headed: panelAnalyzeHeaded,
                     });
+                    if (draft.trim()) setDraft('');
                   }}
                 >
-                  {busy ? '分析中…' : '开始分析'}
+                  {busy
+                    ? (isExecutionMode(panelAnalyzeMode) ? '执行中…' : '分析中…')
+                    : (isExecutionMode(panelAnalyzeMode) ? '开始执行' : '开始分析')}
                 </button>
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  disabled={busy || !effectiveWorkflowId || !status?.hasApiKey}
-                  title="先导出页面 PDF，再按当前模式分析"
-                  onClick={() => {
-                    void startAnalyze(true, analyzeNote, {
-                      mode: panelAnalyzeMode,
-                      headed: panelAnalyzeHeaded,
-                    });
-                  }}
-                >
-                  导出 PDF
-                </button>
+                {!isExecutionMode(panelAnalyzeMode) ? (
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    disabled={busy || !effectiveWorkflowId || !status?.hasApiKey}
+                    title="先导出页面 PDF，再按当前模式分析"
+                    onClick={() => {
+                      void startAnalyze(true, draft.trim() || analyzeNote, {
+                        mode: panelAnalyzeMode,
+                        headed: panelAnalyzeHeaded,
+                      });
+                      if (draft.trim()) setDraft('');
+                    }}
+                  >
+                    导出 PDF
+                  </button>
+                ) : null}
                 <button type="button" className="btn-secondary" disabled={!busy} onClick={() => { void window.agent.cancel(); }}>
                   停止
                 </button>
@@ -1974,7 +1997,6 @@ export function AgentChatPanel({
                 >
                   ×
                 </button>
-                <span className="agent-mention-hint">@ 切换录制 · Enter 发送 · Shift+Enter 换行</span>
               </div>
             ) : null}
 
@@ -1996,16 +2018,25 @@ export function AgentChatPanel({
               placeholder={
                 !status?.hasApiKey
                   ? '请先配置 API Key'
-                  : messages.length === 0
+                  : isExecutionMode(panelAnalyzeMode)
                     ? (mentionedWorkflow
-                      ? '输入分析 Prompt，Enter 发送 · Shift+Enter 换行'
-                      : '输入 @ 选择录制，再填写 Prompt 发送分析')
-                    : '继续追问，Enter 发送 · @ 可切换录制 · Shift+Enter 换行'
+                      ? '输入参数 Prompt（如 邮箱: a@b.com），Enter 交给 Agent 执行 · Shift+Enter 换行'
+                      : '先输入 @ 选择录制，再填写参数 Prompt')
+                    : messages.length === 0
+                      ? (mentionedWorkflow
+                        ? '输入分析 Prompt，Enter 发送 · Shift+Enter 换行'
+                        : '输入 @ 选择录制，再填写 Prompt 发送分析')
+                      : '继续追问，Enter 发送 · @ 可切换录制 · Shift+Enter 换行'
               }
               onKeyDown={handleComposerKeyDown}
             />
-            <button type="submit" className="agent-send" disabled={busy || !draft.trim() || !status?.hasApiKey}>
-              发送
+            <button
+              type="submit"
+              className="agent-send"
+              disabled={busy || !draft.trim() || !status?.hasApiKey}
+              title={isExecutionMode(panelAnalyzeMode) && messages.length === 0 ? '把 Prompt 交给 Agent 执行' : '发送'}
+            >
+              {isExecutionMode(panelAnalyzeMode) && messages.length === 0 ? '执行' : '发送'}
             </button>
           </form>
         </footer>

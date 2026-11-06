@@ -63,6 +63,8 @@ export interface PlaywrightRunWithParamsRequest {
   recordHar?: boolean;
   /** Persist substituted script back to the workflow (default false; uses temp script). */
   persistScript?: boolean;
+  /** Marks this run as Agent-driven automation (affects status copy only). */
+  source?: 'agent' | 'manual';
 }
 
 export interface PlaywrightBaselineInfo {
@@ -224,6 +226,8 @@ export interface PlaywrightPlayRequest {
   recordHar?: boolean;
   /** After a successful play, promote this run as the workflow baseline. */
   saveBaseline?: boolean;
+  /** Marks this run as Agent-driven automation (affects status copy only). */
+  source?: 'agent' | 'manual';
 }
 
 export interface PlaywrightBatchPlayRequest {

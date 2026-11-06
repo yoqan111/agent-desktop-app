@@ -125,13 +125,13 @@ export interface AgentAnalyzeWorkflowRequest {
    * - test-enhance: selectors / asserts / writable script improvements
    * - business-doc: process docs / user stories
    * - anomaly: baseline vs latest run regression summary
-   * - auto-run: execute recorded workflow via playwright_play and report
-   * - param-run: map prompt values onto recorded fill/goto steps then execute
+   * - auto-run: Agent reads Prompt, then calls playwright_run_with_params
+   * - param-run: Agent maps Prompt values onto fill/goto steps then executes
    */
   mode?: AgentAnalyzeMode;
   /**
-   * For auto-run / param-run: whether to show a real browser window.
-   * Default false (headless). Studio「回放」也默认无头。
+   * For auto-run / param-run: ask Agent to run automation headed.
+   * Default false → headless. Studio 手动回放亦默认无头。
    */
   headed?: boolean;
   /** Extra user instruction appended to the analysis prompt. */

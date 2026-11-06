@@ -465,10 +465,11 @@ export async function runWithParams(
     try {
       const played = await playWorkflow({
         id: meta.id,
-        mode: request.mode || 'headed',
+        mode: request.mode || 'headless',
         browser: request.browser || meta.browser,
         slowMoMs: request.slowMoMs ?? meta.slowMoMs,
         recordHar: request.recordHar,
+        source: request.source || 'agent',
       }, {
         wait: options?.wait ?? true,
         timeoutMs: options?.timeoutMs ?? 30 * 60 * 1000,
@@ -1658,10 +1659,12 @@ export async function playWorkflow(
     ? registerRunWaiter(runId, options.timeoutMs ?? 30 * 60 * 1000)
     : null;
 
+  const fromAgent = request.source === 'agent';
+  const runVerb = fromAgent ? 'Agent 自动执行' : '回放';
   meta.updatedAt = nowIso();
   meta.lastRunId = runId;
   meta.lastRunStatus = 'running';
-  meta.lastRunMessage = `回放中（${mode} · ${browser}）…`;
+  meta.lastRunMessage = `${runVerb}中（${mode} · ${browser}）…`;
   writeMeta(meta);
 
   const child = spawn(command, args, {
@@ -1685,7 +1688,7 @@ export async function playWorkflow(
     phase: 'running',
     percent: 10,
     message: [
-      `开始回放 · ${mode}`,
+      `开始${runVerb} · ${mode}`,
       existsSync(authFile) ? '已加载登录态' : null,
       saveStorageTo ? '结束后将刷新登录态' : null,
       recordHar ? '将录制 HAR' : null,
@@ -1759,10 +1762,10 @@ export async function playWorkflow(
       refreshed.lastArtifactCount = artifacts.length;
       refreshed.lastRunStatus = 'passed';
       refreshed.lastRunMessage = saveStorageTo && existsSync(saveStorageTo)
-        ? '回放通过（已刷新登录态）'
+        ? `${runVerb}通过（已刷新登录态）`
         : artifacts.length
-          ? `回放通过（${artifacts.length} 个产物）`
-          : '回放通过';
+          ? `${runVerb}通过（${artifacts.length} 个产物）`
+          : `${runVerb}通过`;
       if (saveBaselineAfterPass) {
         refreshed.lastRunMessage = `${refreshed.lastRunMessage} · 已更新基线`;
       }
@@ -1781,10 +1784,10 @@ export async function playWorkflow(
       current.lastArtifactCount = artifacts.length;
       current.lastRunStatus = 'failed';
       current.lastRunMessage = hasTrace
-        ? `回放失败（退出码 ${code}）。已生成 Trace，可在产物面板打开。`
+        ? `${runVerb}失败（退出码 ${code}）。已生成 Trace，可在产物面板打开。`
         : artifacts.length
-          ? `回放失败（退出码 ${code}）。已生成 ${artifacts.length} 个产物。`
-          : `回放失败（退出码 ${code}）`;
+          ? `${runVerb}失败（退出码 ${code}）。已生成 ${artifacts.length} 个产物。`
+          : `${runVerb}失败（退出码 ${code}）`;
       writeMeta(current);
       emit({
         workflowId: meta.id,

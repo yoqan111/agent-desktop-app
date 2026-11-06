@@ -382,10 +382,21 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
         void refresh();
       }
       if (event.workflowId === selectedId && (event.phase === 'passed' || event.phase === 'failed' || event.phase === 'stopped')) {
+        // Agent-driven automation must stay on the Agent tab; only refresh data.
+        if (tab === 'agent') {
+          void window.playwright.getWorkflow(event.workflowId)
+            .then((item) => {
+              setDetail(item);
+              setScriptDraft(item.script);
+            })
+            .catch(() => undefined);
+          void refreshArtifacts(event.workflowId).catch(() => undefined);
+          return;
+        }
         void openDetail(event.workflowId).catch(() => undefined);
       }
     });
-  }, [openDetail, refresh, selectedId]);
+  }, [openDetail, refresh, refreshArtifacts, selectedId, tab]);
 
   useEffect(() => {
     if (!captureProgress || (captureProgress.phase !== 'passed' && captureProgress.phase !== 'failed')) {
@@ -1991,9 +2002,9 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                       : mode === 'anomaly'
                         ? '基线对比、回归定位、修复建议'
                         : mode === 'auto-run'
-                          ? '按录制步骤自动执行；默认无头，可选有头窗口'
+                          ? 'Prompt 交给 Agent，由其调起录制步骤（默认无头）'
                           : mode === 'param-run'
-                            ? '用 Prompt 参数替换后自动执行；默认无头，可选有头窗口'
+                            ? 'Agent 解析 Prompt 参数后执行（默认无头）'
                             : '综合概要与风险建议',
                 }))}
               />
@@ -2025,7 +2036,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                 <span className="pw-option-body">
                   <span className="pw-option-title">有头窗口执行</span>
                   <span className="pw-option-desc">
-                    勾选后打开可见浏览器跑录制步骤；不勾选则无头执行（与「回放」按钮无关，回放默认也是无头）。
+                    勾选后：Agent 调起自动化时用有头窗口；默认无头。与 Studio「回放」按钮无关。
                   </span>
                 </span>
               </label>
