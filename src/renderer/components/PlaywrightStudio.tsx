@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactElement } from 'react';
 import type {
   PlaywrightArtifact,
   PlaywrightArtifactKind,
   PlaywrightAssertTemplate,
+  PlaywrightAuthBeforePlay,
   PlaywrightBrowser,
   PlaywrightJobPhase,
   PlaywrightRunEvent,
@@ -13,13 +14,39 @@ import type {
   PlaywrightWorkflowMeta,
 } from '../../shared/playwright';
 import {
+  PLAYWRIGHT_AUTH_BEFORE_PLAY,
   PLAYWRIGHT_BROWSERS,
   PLAYWRIGHT_DEFAULT_SLOW_MO_MS,
   PLAYWRIGHT_DEVICES,
   PLAYWRIGHT_RUN_MODES,
 } from '../../shared/playwright';
+import { askConfirm } from '../confirm';
+import { AgentChatPanel } from './AgentChatPanel';
+import { FloatingNotice } from './FloatingNotice';
+import { PwSelect } from './PwSelect';
+import { ResizeHandle } from './ResizeHandle';
 
-type StudioTab = 'workflows' | 'record' | 'detail' | 'schedule';
+function readPaneWidth(key: string, fallback: number): number {
+  try {
+    const raw = window.localStorage.getItem(key);
+    const value = raw ? Number(raw) : fallback;
+    return Number.isFinite(value) ? value : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function storePaneWidth(key: string, value: number, min: number, max: number): number {
+  const next = Math.round(Math.min(max, Math.max(min, value)));
+  try {
+    window.localStorage.setItem(key, String(next));
+  } catch {
+    // ignore
+  }
+  return next;
+}
+
+type StudioTab = 'workflows' | 'record' | 'detail' | 'schedule' | 'agent';
 
 type CaptureKind = 'screenshot' | 'pdf';
 
@@ -65,6 +92,12 @@ function modeLabel(mode: PlaywrightRunMode): string {
   return '逐步 Debug';
 }
 
+function authBeforePlayLabel(policy?: PlaywrightAuthBeforePlay): string {
+  if (policy === 'always') return '每次回放前';
+  if (policy === 'off') return '关闭';
+  return '缺少登录态时';
+}
+
 function artifactKindLabel(kind: PlaywrightArtifactKind): string {
   if (kind === 'trace') return 'Trace';
   if (kind === 'video') return '视频';
@@ -76,9 +109,34 @@ function artifactKindLabel(kind: PlaywrightArtifactKind): string {
 function jobKindLabel(kind?: string): string {
   if (kind === 'record') return '录制';
   if (kind === 'batch') return '批量回放';
-  if (kind === 'capture') return '截图/PDF';
+  if (kind === 'capture') return '页面采集';
   if (kind === 'play') return '回放';
   return '任务';
+}
+
+function studioTabTitle(tab: StudioTab): string {
+  switch (tab) {
+    case 'workflows': return '工作流管理';
+    case 'record': return '录制新流程';
+    case 'schedule': return '批量与定时';
+    case 'agent': return 'Agent 分析';
+    default: return '详情与回放';
+  }
+}
+
+function studioTabSubtitle(tab: StudioTab): string {
+  switch (tab) {
+    case 'workflows':
+      return '管理脚本、登录态与产物；支持批量回放和一键 Agent 分析';
+    case 'record':
+      return 'Codegen 录制脚本；可复用持久登录目录，或加载已有 storageState';
+    case 'schedule':
+      return '勾选多条工作流批量顺序回放，或按间隔自动执行';
+    case 'agent':
+      return '基于 PDF / 脚本 / 产物分析页面与断言建议；支持 Cursor 与 OpenAI 兼容模型';
+    default:
+      return '编辑脚本、配置登录前置、回放执行，并可截图 / 导出 PDF';
+  }
 }
 
 function captureKindLabel(kind: CaptureKind): string {
@@ -156,6 +214,17 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
   const [scheduleMode, setScheduleMode] = useState<PlaywrightRunMode>('headless');
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
   const [captureProgress, setCaptureProgress] = useState<CaptureProgress | null>(null);
+  const [agentAutoStart, setAgentAutoStart] = useState(false);
+  const [agentCapturePdf, setAgentCapturePdf] = useState(true);
+  const [agentAnalyzeNote, setAgentAnalyzeNote] = useState('');
+  const [agentLaunchKey, setAgentLaunchKey] = useState(0);
+  const [pendingAgentAnalyze, setPendingAgentAnalyze] = useState<{
+    ids: string[];
+    name: string;
+    capturePdf: boolean;
+    prompt: string;
+  } | null>(null);
+  const [railWidth, setRailWidth] = useState(() => readPaneWidth('pw-studio-rail', 220));
 
   const refresh = useCallback(async () => {
     if (!window.playwright) {
@@ -196,7 +265,10 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
     return PLAYWRIGHT_DEFAULT_SLOW_MO_MS;
   }, []);
 
-  const openDetail = useCallback(async (id: string): Promise<PlaywrightWorkflowDetail> => {
+  const openDetail = useCallback(async (
+    id: string,
+    options?: { tab?: StudioTab },
+  ): Promise<PlaywrightWorkflowDetail> => {
     const item = await window.playwright.getWorkflow(id);
     setSelectedId(id);
     setDetail(item);
@@ -205,7 +277,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
     setNotesDraft(item.notes || '');
     setPlayBrowser(item.browser);
     setSlowMo(String(resolveSlowMoMs(item)));
-    setTab('detail');
+    setTab(options?.tab || 'detail');
     await refreshArtifacts(id);
     return item;
   }, [refreshArtifacts, resolveSlowMoMs]);
@@ -215,6 +287,12 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
       setError(err instanceof Error ? err.message : '加载失败');
     });
   }, [refresh]);
+
+  useEffect(() => {
+    if (tab !== 'agent') {
+      setAgentAutoStart(false);
+    }
+  }, [tab]);
 
   useEffect(() => {
     if (!window.playwright) return undefined;
@@ -267,8 +345,32 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
   }, [captureProgress]);
 
   const authSources = useMemo(
-    () => list.filter((item) => item.hasAuth),
+    () => list
+      .filter((item) => item.hasAuth)
+      .sort((a, b) => {
+        const authRank = Number(Boolean(b.isAuthWorkflow)) - Number(Boolean(a.isAuthWorkflow));
+        if (authRank !== 0) return authRank;
+        return b.updatedAt.localeCompare(a.updatedAt);
+      }),
     [list],
+  );
+
+  const authSourceOptions = useMemo(
+    () => [
+      {
+        value: '',
+        label: '不使用',
+        description: authSources.length
+          ? '本次录制不注入已有 storageState'
+          : '暂无已保存登录态；可先录制并勾选「保存登录态」',
+      },
+      ...authSources.map((item) => ({
+        value: item.id,
+        label: `${item.name}${item.isAuthWorkflow ? '（登录流）' : ''}`,
+        description: `更新于 ${formatTime(item.updatedAt)}`,
+      })),
+    ],
+    [authSources],
   );
 
   const jobLocked = Boolean(status?.activeJob) || busy;
@@ -389,6 +491,57 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
     }
   }
 
+  async function handleSaveAuthConfig(patch: {
+    authWorkflowId?: string | null;
+    authBeforePlay?: PlaywrightAuthBeforePlay;
+    isAuthWorkflow?: boolean;
+  }): Promise<void> {
+    if (!selectedId) return;
+    setBusy(true);
+    setError('');
+    try {
+      const next = await window.playwright.updateWorkflow({
+        id: selectedId,
+        ...patch,
+      });
+      setDetail(next);
+      await refresh();
+      setLogLines((prev) => [...prev, '登录前置配置已保存']);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存登录配置失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRefreshAuthState(): Promise<void> {
+    if (!selectedId) return;
+    setBusy(true);
+    setError('');
+    setLivePhase('running');
+    setLogLines((prev) => [...prev, '刷新登录态：回放当前工作流并导出 storageState…']);
+    try {
+      await window.playwright.play({
+        id: selectedId,
+        mode: playMode === 'ui' || playMode === 'debug' ? 'headed' : playMode,
+        browser: playBrowser,
+        slowMoMs: Number(slowMo) || PLAYWRIGHT_DEFAULT_SLOW_MO_MS,
+        skipAuthPrecondition: true,
+        saveAuthAfterPlay: true,
+      });
+      await refresh();
+      if (selectedId) {
+        const next = await window.playwright.getWorkflow(selectedId);
+        setDetail(next);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '刷新登录态失败');
+      setLivePhase('failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function handleCopyLog(): Promise<void> {
     const text = logLines.join('\n').trim();
     if (!text) return;
@@ -402,9 +555,13 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
   }
 
   async function handleDelete(id: string): Promise<void> {
-    if (!window.confirm('确定删除这个工作流？脚本与登录态都会移除。')) {
-      return;
-    }
+    const ok = await askConfirm({
+      title: '确定删除这个工作流？',
+      message: '脚本与登录态都会移除。',
+      confirmLabel: '删除',
+      danger: true,
+    });
+    if (!ok) return;
     setBusy(true);
     setError('');
     try {
@@ -418,6 +575,44 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleBatchDelete(): Promise<void> {
+    if (selectedIds.length === 0) {
+      setError('请先勾选要批量删除的工作流。');
+      return;
+    }
+    const count = selectedIds.length;
+    const ok = await askConfirm({
+      title: `确定删除选中的 ${count} 条工作流？`,
+      message: '脚本、登录态与本地产物都会移除，且不可恢复。',
+      confirmLabel: `删除 ${count} 条`,
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    setError('');
+    setLogLines([`批量删除：${count} 条`]);
+    try {
+      const ids = [...selectedIds];
+      for (const id of ids) {
+        await window.playwright.deleteWorkflow(id);
+        setLogLines((prev) => [...prev, `已删除 ${id.slice(0, 8)}…`]);
+      }
+      if (selectedId && ids.includes(selectedId)) {
+        setSelectedId('');
+        setDetail(null);
+        setTab('workflows');
+      }
+      setSelectedIds([]);
+      await refresh();
+      setLogLines((prev) => [...prev, `批量删除完成：${count} 条`]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '批量删除失败');
+      await refresh();
     } finally {
       setBusy(false);
     }
@@ -447,6 +642,9 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
       });
       const lines = result.results.map((item) => `${item.id.slice(0, 8)}… ${item.phase}: ${item.message}`);
       setLogLines((prev) => [...prev, ...lines]);
+      setLivePhase(
+        result.results.some((item) => item.phase === 'failed') ? 'failed' : 'passed',
+      );
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : '批量回放失败');
@@ -475,9 +673,13 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
 
   async function handleDeleteArtifact(item: PlaywrightArtifact): Promise<void> {
     const label = `${artifactKindLabel(item.kind)} · ${item.name}`;
-    if (!window.confirm(`确定删除产物？\n${label}`)) {
-      return;
-    }
+    const ok = await askConfirm({
+      title: '确定删除产物？',
+      message: label,
+      confirmLabel: '删除',
+      danger: true,
+    });
+    if (!ok) return;
     setError('');
     try {
       await window.playwright.deleteArtifact(item.path);
@@ -490,6 +692,161 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
     } catch (err) {
       setError(err instanceof Error ? err.message : '删除产物失败');
     }
+  }
+
+  function requestAgentAnalyze(id: string, options?: { capturePdf?: boolean; name?: string }): void {
+    const workflow = list.find((item) => item.id === id);
+    const name = options?.name || workflow?.name || detail?.name || '该工作流';
+    setPendingAgentAnalyze({
+      ids: [id],
+      name,
+      capturePdf: options?.capturePdf !== false,
+      prompt: `请分析工作流「${name}」，给出页面/流程概要、关键断言建议、风险点与后续录制建议。`,
+    });
+  }
+
+  function requestBatchAgentAnalyze(): void {
+    if (selectedIds.length === 0) {
+      setError('请先勾选要批量分析的工作流。');
+      return;
+    }
+    if (selectedIds.length === 1) {
+      const only = selectedIds[0];
+      requestAgentAnalyze(only, {
+        capturePdf: true,
+        name: list.find((item) => item.id === only)?.name,
+      });
+      return;
+    }
+    const names = selectedIds
+      .map((id) => list.find((item) => item.id === id)?.name || id.slice(0, 8))
+      .slice(0, 6);
+    const namePreview = names.join('、') + (selectedIds.length > 6 ? '…' : '');
+    setPendingAgentAnalyze({
+      ids: [...selectedIds],
+      name: `${selectedIds.length} 条工作流`,
+      capturePdf: true,
+      prompt: `请分别分析以下工作流（${namePreview}），给出各自的页面/流程概要、关键断言建议、风险点与后续录制建议。`,
+    });
+  }
+
+  function waitForAgentDone(timeoutMs = 15 * 60 * 1000): {
+    promise: Promise<void>;
+    cancel: () => void;
+  } {
+    let off: (() => void) | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const promise = new Promise<void>((resolve, reject) => {
+      if (!window.agent) {
+        reject(new Error('Agent 桥接不可用。'));
+        return;
+      }
+      timer = setTimeout(() => {
+        off?.();
+        off = null;
+        timer = null;
+        reject(new Error('Agent 分析超时。'));
+      }, timeoutMs);
+      off = window.agent.onEvent((event) => {
+        if (event.type !== 'done') return;
+        if (timer) clearTimeout(timer);
+        timer = null;
+        off?.();
+        off = null;
+        if (event.phase === 'failed' || event.phase === 'cancelled') {
+          reject(new Error(event.message || 'Agent 分析未完成'));
+          return;
+        }
+        resolve();
+      });
+    });
+    return {
+      promise,
+      cancel: () => {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        off?.();
+        off = null;
+      },
+    };
+  }
+
+  function confirmAgentAnalyze(): void {
+    const pending = pendingAgentAnalyze;
+    if (!pending || pending.ids.length === 0) return;
+    const prompt = pending.prompt.trim();
+    if (!prompt) {
+      setError('请先填写会话 Prompt。');
+      return;
+    }
+    setPendingAgentAnalyze(null);
+
+    if (pending.ids.length === 1) {
+      setAgentCapturePdf(pending.capturePdf);
+      setAgentAnalyzeNote(prompt);
+      setAgentLaunchKey((key) => key + 1);
+      setAgentAutoStart(true);
+      void openDetail(pending.ids[0], { tab: 'agent' }).catch((err) => {
+        setError(err instanceof Error ? err.message : '打开工作流失败');
+      });
+      return;
+    }
+
+    void (async () => {
+      if (!window.agent) {
+        setError('Agent 桥接不可用，请在 Electron 窗口中打开。');
+        return;
+      }
+      setBusy(true);
+      setError('');
+      setLivePhase('running');
+      setAgentAutoStart(false);
+      setTab('agent');
+      setLogLines([`批量 Agent 分析：${pending.ids.length} 条`]);
+      let failed = 0;
+      try {
+        for (let index = 0; index < pending.ids.length; index += 1) {
+          const id = pending.ids[index];
+          const workflow = list.find((item) => item.id === id);
+          const name = workflow?.name || id.slice(0, 8);
+          setLogLines((prev) => [...prev, `(${index + 1}/${pending.ids.length}) 开始分析：${name}`]);
+          const waiter = waitForAgentDone();
+          try {
+            const created = await window.agent.createSession({
+              workflowId: id,
+              workflowName: name,
+              title: `分析 · ${name}`,
+            });
+            await window.agent.analyzeWorkflow({
+              workflowId: id,
+              capturePdf: pending.capturePdf,
+              note: prompt,
+              chatSessionId: created.id,
+            });
+            await waiter.promise;
+            setLogLines((prev) => [...prev, `(${index + 1}/${pending.ids.length}) 完成：${name}`]);
+          } catch (err) {
+            waiter.cancel();
+            failed += 1;
+            const message = err instanceof Error ? err.message : '分析失败';
+            setLogLines((prev) => [...prev, `(${index + 1}/${pending.ids.length}) 失败：${name} · ${message}`]);
+          }
+        }
+        setLivePhase(failed > 0 ? 'failed' : 'passed');
+        setLogLines((prev) => [
+          ...prev,
+          failed > 0
+            ? `批量 Agent 分析结束：成功 ${pending.ids.length - failed} · 失败 ${failed}`
+            : `批量 Agent 分析完成：${pending.ids.length} 条`,
+        ]);
+        setAgentLaunchKey((key) => key + 1);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : '批量 Agent 分析失败');
+        setLivePhase('failed');
+      } finally {
+        setBusy(false);
+      }
+    })();
   }
 
   async function handleCapture(kind: CaptureKind): Promise<void> {
@@ -563,14 +920,21 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
     }
   }
 
+  function resizeRail(delta: number): void {
+    setRailWidth((width) => storePaneWidth('pw-studio-rail', width + delta, 160, 420));
+  }
+
   return (
-    <div className="pw-studio">
+    <div
+      className="pw-studio"
+      style={{ '--pw-rail-width': `${railWidth}px` } as CSSProperties}
+    >
       <aside className="pw-rail">
         <div className="pw-brand">
           <div className="pw-brand-mark">P</div>
           <div>
             <strong>Playwright Studio</strong>
-            <em>录制 · 断言 · 回放</em>
+            <em>录制 · 登录 · 回放 · Agent</em>
           </div>
         </div>
         <nav className="pw-nav">
@@ -586,10 +950,20 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
             disabled={!detail}
             onClick={() => setTab('detail')}
           >
-            详情 / 执行
+            详情 / 回放
           </button>
           <button type="button" className={tab === 'schedule' ? 'active' : ''} onClick={() => setTab('schedule')}>
             批量 / 定时
+          </button>
+          <button
+            type="button"
+            className={tab === 'agent' ? 'active' : ''}
+            onClick={() => {
+              setAgentAutoStart(false);
+              setTab('agent');
+            }}
+          >
+            Agent 分析
           </button>
         </nav>
         <div className="pw-rail-meta">
@@ -598,23 +972,13 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
         </div>
       </aside>
 
+      <ResizeHandle label="调整导航宽度" onResize={resizeRail} />
+
       <div className="pw-body">
         <header className="pw-top">
           <div className="pw-top-copy">
-            <h1>
-              {tab === 'workflows'
-                ? '工作流管理'
-                : tab === 'record'
-                  ? '录制新流程'
-                  : tab === 'schedule'
-                    ? '批量与定时'
-                    : '脚本与执行'}
-            </h1>
-            <p className="subtitle">
-              {tab === 'schedule'
-                ? '勾选多条工作流批量回放，或按间隔自动跑一遍'
-                : '浏览器里操作 → Codegen 生成脚本 → 断言 / 截图 / 回放'}
-            </p>
+            <h1>{studioTabTitle(tab)}</h1>
+            <p className="subtitle">{studioTabSubtitle(tab)}</p>
           </div>
           <div className="pw-top-actions">
             <button type="button" className="pw-tool-btn" disabled={busy} onClick={() => { void handleInstall(); }}>
@@ -658,8 +1022,6 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
           </div>
         ) : null}
 
-        {error ? <p className="banner">{error}</p> : null}
-
         {tab === 'workflows' ? (
           <section className="pw-panel">
             <div className="pw-panel-head">
@@ -677,6 +1039,22 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                   >
                     批量回放{selectedIds.length ? ` (${selectedIds.length})` : ''}
                   </button>
+                  <button
+                    type="button"
+                    className="pw-inline-cta"
+                    disabled={jobLocked || selectedIds.length === 0}
+                    onClick={requestBatchAgentAnalyze}
+                  >
+                    批量 Agent 分析{selectedIds.length ? ` (${selectedIds.length})` : ''}
+                  </button>
+                  <button
+                    type="button"
+                    className="pw-inline-cta is-danger"
+                    disabled={jobLocked || selectedIds.length === 0}
+                    onClick={() => { void handleBatchDelete(); }}
+                  >
+                    批量删除{selectedIds.length ? ` (${selectedIds.length})` : ''}
+                  </button>
                   <button type="button" className="pw-inline-cta" onClick={() => setTab('record')}>
                     新建录制
                   </button>
@@ -686,7 +1064,9 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
             {list.length === 0 ? (
               <div className="pw-empty">
                 <strong>还没有工作流</strong>
-                <p>用 Codegen 录一条操作路径，之后可反复回放。可先试 TodoMVC。</p>
+                <p>
+                  用 Codegen 录一条操作路径，之后可回放、保存登录态，并交给 Agent 分析。默认示例为 TodoMVC。
+                </p>
                 <button type="button" className="btn-primary" onClick={() => setTab('record')}>
                   新建录制
                 </button>
@@ -710,6 +1090,8 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                         <span>{browserLabel(item.browser)}</span>
                         {item.device ? <span>{item.device}</span> : null}
                         {item.hasAuth ? <span>含登录态</span> : null}
+                        {item.isAuthWorkflow ? <span>登录流</span> : null}
+                        {item.authWorkflowId ? <span>有登录前置</span> : null}
                         {item.usePersistentProfile ? <span>持久目录</span> : null}
                         {item.lastArtifactCount ? <span>产物 {item.lastArtifactCount}</span> : null}
                         <span className={`phase-${item.lastRunStatus || 'idle'}`}>{phaseLabel(item.lastRunStatus)}</span>
@@ -740,6 +1122,14 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                       </button>
                       <button
                         type="button"
+                        className="pw-row-btn is-primary"
+                        disabled={jobLocked}
+                        onClick={() => requestAgentAnalyze(item.id, { capturePdf: true, name: item.name })}
+                      >
+                        Agent 分析
+                      </button>
+                      <button
+                        type="button"
                         className="pw-row-btn is-danger"
                         disabled={jobLocked}
                         onClick={() => { void handleDelete(item.id); }}
@@ -767,52 +1157,68 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
               </label>
               <label className="field">
                 浏览器
-                <select value={browser} disabled={jobLocked} onChange={(e) => setBrowser(e.target.value as PlaywrightBrowser)}>
-                  {PLAYWRIGHT_BROWSERS.map((item) => (
-                    <option key={item} value={item}>{browserLabel(item)}</option>
-                  ))}
-                </select>
+                <PwSelect
+                  value={browser}
+                  disabled={jobLocked}
+                  onChange={(next) => setBrowser(next as PlaywrightBrowser)}
+                  options={PLAYWRIGHT_BROWSERS.map((item) => ({
+                    value: item,
+                    label: browserLabel(item),
+                  }))}
+                />
               </label>
               <label className="field">
                 设备模拟
-                <select value={device} disabled={jobLocked} onChange={(e) => setDevice(e.target.value)}>
-                  {PLAYWRIGHT_DEVICES.map((item) => (
-                    <option key={item || 'desktop'} value={item}>{item || '桌面（默认）'}</option>
-                  ))}
-                </select>
+                <PwSelect
+                  value={device}
+                  disabled={jobLocked}
+                  onChange={setDevice}
+                  options={PLAYWRIGHT_DEVICES.map((item) => ({
+                    value: item,
+                    label: item || '桌面（默认）',
+                  }))}
+                />
               </label>
             </div>
 
             <div className="pw-auth-block">
               <div className="pw-auth-head">
                 <strong>登录与会话</strong>
-                <span>决定录制窗口是否记住登录，以及回放能否带上 Cookie</span>
+                <span>控制录制是否免登，以及回放 / 登录前置能否复用 Cookie</span>
               </div>
               <label className="field">
                 加载已有登录态
-                <select value={loadAuthFromId} disabled={jobLocked} onChange={(e) => setLoadAuthFromId(e.target.value)}>
-                  <option value="">不使用</option>
-                  {authSources.map((item) => (
-                    <option key={item.id} value={item.id}>{item.name}</option>
-                  ))}
-                </select>
+                <PwSelect
+                  value={loadAuthFromId}
+                  disabled={jobLocked}
+                  onChange={setLoadAuthFromId}
+                  options={authSourceOptions}
+                />
+                <span className="hint">
+                  {authSources.length
+                    ? (loadAuthFromId
+                      ? '已选择登录态：录制将优先注入 storageState（此时不会启用持久登录目录）。'
+                      : '可选择曾保存过登录态的工作流；若同时勾选「持久登录目录」，以本选项为准。')
+                    : '还没有可加载的登录态。请先录制并勾选「录制结束时保存登录态」，或在详情页「刷新登录态」。'}
+                </span>
               </label>
               <div className="pw-option-grid">
-                <label className={`pw-option-card${usePersistentProfile ? ' is-on' : ''}${jobLocked ? ' is-disabled' : ''}`}>
+                <label className={`pw-option-card${usePersistentProfile && !loadAuthFromId ? ' is-on' : ''}${jobLocked || Boolean(loadAuthFromId) ? ' is-disabled' : ''}`}>
                   <input
                     type="checkbox"
-                    checked={usePersistentProfile}
-                    disabled={jobLocked}
+                    checked={usePersistentProfile && !loadAuthFromId}
+                    disabled={jobLocked || Boolean(loadAuthFromId)}
                     onChange={(e) => setUsePersistentProfile(e.target.checked)}
                   />
                   <span className="pw-option-body">
                     <span className="pw-option-title">
                       复用持久登录目录
-                      <em>推荐</em>
+                      <em>{loadAuthFromId ? '已让位于登录态' : '推荐'}</em>
                     </span>
                     <span className="pw-option-desc">
-                      同一浏览器下次录制自动带登录。Studio 专用目录，不是日常 Chrome 窗口
-                      {status?.persistentProfilesDir ? ` · ${browser}` : ''}
+                      {loadAuthFromId
+                        ? '已选择「加载已有登录态」时不会启用持久目录，避免与 Codegen --load-storage 冲突'
+                        : `同一浏览器下次录制自动带登录。Studio 专用目录，不是日常浏览器窗口${status?.persistentProfilesDir ? ` · ${browser}` : ''}`}
                     </span>
                   </span>
                 </label>
@@ -826,7 +1232,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                   <span className="pw-option-body">
                     <span className="pw-option-title">录制结束时保存登录态</span>
                     <span className="pw-option-desc">
-                      导出 storageState，供无痕回放复用 Cookie
+                      导出 storageState，供无痕回放与登录前置复用
                     </span>
                   </span>
                 </label>
@@ -844,7 +1250,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                 {busy ? '启动中…' : '开始录制'}
               </button>
               <p className="hint">
-                开始后会打开浏览器与 Playwright Inspector；操作完成后关闭录制窗口即可写入脚本。
+                开始后会打开浏览器与 Playwright Inspector；操作完成后关闭录制窗口即可保存脚本（若已勾选也会导出登录态）。
               </p>
             </div>
           </section>
@@ -907,23 +1313,27 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                 <h3>回放</h3>
                 <label className="field">
                   浏览器
-                  <select
+                  <PwSelect
                     value={playBrowser}
                     disabled={jobLocked}
-                    onChange={(e) => setPlayBrowser(e.target.value as PlaywrightBrowser)}
-                  >
-                    {PLAYWRIGHT_BROWSERS.map((item) => (
-                      <option key={item} value={item}>{browserLabel(item)}</option>
-                    ))}
-                  </select>
+                    onChange={(value) => setPlayBrowser(value as PlaywrightBrowser)}
+                    options={PLAYWRIGHT_BROWSERS.map((item) => ({
+                      value: item,
+                      label: browserLabel(item),
+                    }))}
+                  />
                 </label>
                 <label className="field">
                   模式
-                  <select value={playMode} disabled={jobLocked} onChange={(e) => setPlayMode(e.target.value as PlaywrightRunMode)}>
-                    {PLAYWRIGHT_RUN_MODES.map((mode) => (
-                      <option key={mode} value={mode}>{modeLabel(mode)}</option>
-                    ))}
-                  </select>
+                  <PwSelect
+                    value={playMode}
+                    disabled={jobLocked}
+                    onChange={(value) => setPlayMode(value as PlaywrightRunMode)}
+                    options={PLAYWRIGHT_RUN_MODES.map((mode) => ({
+                      value: mode,
+                      label: modeLabel(mode),
+                    }))}
+                  />
                 </label>
                 <label className="field">
                   放慢 (ms)
@@ -933,8 +1343,80 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                   执行回放
                 </button>
                 <p className="hint">
-                  选「本机 Chrome / Edge」走系统浏览器，无需再装 Playwright Chromium。
-                  放慢默认沿用录制值（通常 {PLAYWRIGHT_DEFAULT_SLOW_MO_MS}ms）；执行后会记住浏览器与放慢设置。
+                  支持有头 / 无头 / UI / Debug。回放会自动加载并在成功后刷新登录态（storageState），不再默认截图。
+                  「本机 Chrome / Edge」走系统浏览器；放慢默认 {PLAYWRIGHT_DEFAULT_SLOW_MO_MS}ms，执行后会记住浏览器与放慢设置。
+                </p>
+              </div>
+              <div className="side-block">
+                <h3>登录前置</h3>
+                <label className="field">
+                  登录工作流
+                  <PwSelect
+                    value={detail.authWorkflowId || ''}
+                    disabled={jobLocked}
+                    onChange={(value) => {
+                      void handleSaveAuthConfig({
+                        authWorkflowId: value ? value : null,
+                        authBeforePlay: value
+                          ? (detail.authBeforePlay || 'if-missing-auth')
+                          : 'off',
+                      });
+                    }}
+                    options={[
+                      { value: '', label: '不使用' },
+                      ...list
+                        .filter((item) => item.id !== detail.id)
+                        .map((item) => ({
+                          value: item.id,
+                          label: `${item.name}${item.isAuthWorkflow ? '（登录流）' : ''}`,
+                          description: item.hasAuth ? '已有登录态' : '暂无登录态文件',
+                        })),
+                    ]}
+                  />
+                </label>
+                <label className="field">
+                  触发策略
+                  <PwSelect
+                    value={detail.authBeforePlay || (detail.authWorkflowId ? 'if-missing-auth' : 'off')}
+                    disabled={jobLocked || !detail.authWorkflowId}
+                    onChange={(value) => {
+                      void handleSaveAuthConfig({
+                        authBeforePlay: value as PlaywrightAuthBeforePlay,
+                      });
+                    }}
+                    options={PLAYWRIGHT_AUTH_BEFORE_PLAY.map((policy) => ({
+                      value: policy,
+                      label: authBeforePlayLabel(policy),
+                    }))}
+                  />
+                </label>
+                <label className={`pw-option-card${detail.isAuthWorkflow ? ' is-on' : ''}${jobLocked ? ' is-disabled' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(detail.isAuthWorkflow)}
+                    disabled={jobLocked}
+                    onChange={(e) => {
+                      void handleSaveAuthConfig({ isAuthWorkflow: e.target.checked });
+                    }}
+                  />
+                  <span className="pw-option-body">
+                    <span className="pw-option-title">标记为登录流</span>
+                    <span className="pw-option-desc">便于业务流挑选；可单独「刷新登录态」导出最新 Cookie</span>
+                  </span>
+                </label>
+                <div className="pw-capture-actions" style={{ marginTop: 8 }}>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    disabled={jobLocked}
+                    onClick={() => { void handleRefreshAuthState(); }}
+                  >
+                    刷新登录态
+                  </button>
+                </div>
+                <p className="hint">
+                  建议先录一条登录流并「刷新登录态」，再在业务流里选它作前置。
+                  「缺少登录态时」仅在本流没有 storageState 时跑登录；「每次回放前」适合 Cookie 易过期的站点。
                 </p>
               </div>
               <div className="side-block">
@@ -945,6 +1427,14 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                   </button>
                   <button type="button" className="btn-secondary" disabled={jobLocked} onClick={() => { void handleCapture('pdf'); }}>
                     导出 PDF
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={jobLocked}
+                    onClick={() => requestAgentAnalyze(detail.id, { capturePdf: true, name: detail.name })}
+                  >
+                    导出 PDF 并分析
                   </button>
                 </div>
                 {captureProgress ? (
@@ -990,7 +1480,9 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                     <p className="pw-capture-msg">{captureProgress.message}</p>
                   </div>
                 ) : (
-                  <p className="hint">打开起始 URL 采集，结果归档到产物面板。PDF 仅 Chromium / Chrome / Edge。</p>
+                  <p className="hint">
+                    打开起始 URL 采集并归档到产物；也可直接「导出 PDF 并分析」。PDF 仅 Chromium / Chrome / Edge。
+                  </p>
                 )}
               </div>
               <div className="side-block">
@@ -1000,6 +1492,14 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                   <div><dt>设备</dt><dd>{detail.device || '桌面'}</dd></div>
                   <div><dt>放慢</dt><dd>{resolveSlowMoMs(detail)} ms</dd></div>
                   <div><dt>登录态</dt><dd>{detail.hasAuth ? '已保存' : '无'}</dd></div>
+                  <div>
+                    <dt>登录前置</dt>
+                    <dd>
+                      {detail.authWorkflowId
+                        ? `${list.find((item) => item.id === detail.authWorkflowId)?.name || detail.authWorkflowId.slice(0, 8)} · ${authBeforePlayLabel(detail.authBeforePlay)}`
+                        : '无'}
+                    </dd>
+                  </div>
                   <div><dt>最近执行</dt><dd>{formatTime(detail.lastRunAt)}</dd></div>
                   <div><dt>状态</dt><dd>{phaseLabel(detail.lastRunStatus)}</dd></div>
                 </dl>
@@ -1016,7 +1516,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                   </button>
                 </div>
                 {artifacts.length === 0 ? (
-                  <p className="hint">失败回放会保留 Trace / 视频 / 截图；也可主动截图或导出 PDF。</p>
+                  <p className="hint">失败回放会保留 Trace / 视频（默认不截图）；也可主动截图、导出 PDF，供 Agent 分析使用。</p>
                 ) : (
                   <div className="pw-artifact-list">
                     {artifacts.map((item) => (
@@ -1089,32 +1589,51 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
           </div>
         ) : null}
 
+        {tab === 'agent' ? (
+          <AgentChatPanel
+            key={`agent-${selectedId || 'none'}-${agentLaunchKey}`}
+            workflowId={selectedId || null}
+            workflowName={detail?.name || list.find((item) => item.id === selectedId)?.name}
+            autoStart={agentAutoStart}
+            forceNewSession={agentAutoStart}
+            capturePdf={agentCapturePdf}
+            analyzeNote={agentAnalyzeNote}
+            onBusyChange={(agentBusy) => {
+              if (agentBusy) setLivePhase('running');
+            }}
+          />
+        ) : null}
+
         {tab === 'schedule' ? (
           <section className="pw-panel pw-form-panel">
             <div className="pw-auth-head">
               <strong>批量回放</strong>
-              <span>在工作流列表勾选后，可从这里或列表顶部一键顺序执行</span>
+              <span>在工作流列表勾选后，可从这里或列表顶部按顺序执行；会沿用各流的登录前置配置</span>
             </div>
             <div className="pw-form-grid">
               <label className="field">
                 浏览器
-                <select
+                <PwSelect
                   value={playBrowser}
                   disabled={jobLocked}
-                  onChange={(e) => setPlayBrowser(e.target.value as PlaywrightBrowser)}
-                >
-                  {PLAYWRIGHT_BROWSERS.map((item) => (
-                    <option key={item} value={item}>{browserLabel(item)}</option>
-                  ))}
-                </select>
+                  onChange={(value) => setPlayBrowser(value as PlaywrightBrowser)}
+                  options={PLAYWRIGHT_BROWSERS.map((item) => ({
+                    value: item,
+                    label: browserLabel(item),
+                  }))}
+                />
               </label>
               <label className="field">
                 回放模式
-                <select value={playMode} disabled={jobLocked} onChange={(e) => setPlayMode(e.target.value as PlaywrightRunMode)}>
-                  {PLAYWRIGHT_RUN_MODES.map((mode) => (
-                    <option key={mode} value={mode}>{modeLabel(mode)}</option>
-                  ))}
-                </select>
+                <PwSelect
+                  value={playMode}
+                  disabled={jobLocked}
+                  onChange={(value) => setPlayMode(value as PlaywrightRunMode)}
+                  options={PLAYWRIGHT_RUN_MODES.map((mode) => ({
+                    value: mode,
+                    label: modeLabel(mode),
+                  }))}
+                />
               </label>
               <label className="field">
                 已选工作流
@@ -1133,7 +1652,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
             <div className="pw-auth-block" style={{ marginTop: 24 }}>
               <div className="pw-auth-head">
                 <strong>简易定时</strong>
-                <span>按间隔分钟自动批量回放已选工作流（无头优先）</span>
+                <span>按间隔分钟自动批量回放已选工作流；应用保持运行时才会触发</span>
               </div>
               <div className="pw-form-grid">
                 <label className="field">
@@ -1149,14 +1668,15 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                 </label>
                 <label className="field">
                   定时模式
-                  <select
+                  <PwSelect
                     value={scheduleMode}
                     disabled={jobLocked}
-                    onChange={(e) => setScheduleMode(e.target.value as PlaywrightRunMode)}
-                  >
-                    <option value="headless">{modeLabel('headless')}</option>
-                    <option value="headed">{modeLabel('headed')}</option>
-                  </select>
+                    onChange={(value) => setScheduleMode(value as PlaywrightRunMode)}
+                    options={[
+                      { value: 'headless', label: modeLabel('headless') },
+                      { value: 'headed', label: modeLabel('headed') },
+                    ]}
+                  />
                 </label>
               </div>
               <label className={`pw-option-card${scheduleEnabled ? ' is-on' : ''}${jobLocked ? ' is-disabled' : ''}`}>
@@ -1197,6 +1717,85 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
           </section>
         ) : null}
       </div>
+
+      <FloatingNotice message={error} onClose={() => setError('')} />
+
+      {pendingAgentAnalyze ? (
+        <div
+          className="pw-modal-backdrop"
+          role="presentation"
+          onClick={() => setPendingAgentAnalyze(null)}
+        >
+          <div
+            className="pw-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pw-agent-analyze-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <strong id="pw-agent-analyze-title">
+              {pendingAgentAnalyze.ids.length > 1 ? '确认批量 Agent 分析' : '确认 Agent 分析'}
+            </strong>
+            <p>
+              {pendingAgentAnalyze.ids.length > 1
+                ? `即将依次分析「${pendingAgentAnalyze.name}」。填写统一会话 Prompt 并选择分析方式，确认后为每条新建会话并自动开始。`
+                : `即将分析工作流「${pendingAgentAnalyze.name}」。填写会话 Prompt 并选择分析方式，确认后新建会话并自动开始。`}
+            </p>
+            <label className="field">
+              会话 Prompt
+              <textarea
+                rows={5}
+                autoFocus
+                value={pendingAgentAnalyze.prompt}
+                placeholder="写下你希望 Agent 完成的分析任务，将作为本会话首条用户消息发送…"
+                onChange={(event) => {
+                  const prompt = event.target.value;
+                  setPendingAgentAnalyze((prev) => (prev ? { ...prev, prompt } : prev));
+                }}
+              />
+              <span className="hint">必填。会带入新会话作为首条消息；后台仍会附带脚本 / URL / 产物上下文。</span>
+            </label>
+            <label className="field">
+              分析方式
+              <PwSelect
+                value={pendingAgentAnalyze.capturePdf ? 'pdf' : 'script'}
+                onChange={(value) => {
+                  setPendingAgentAnalyze((prev) => (
+                    prev ? { ...prev, capturePdf: value === 'pdf' } : prev
+                  ));
+                }}
+                options={[
+                  {
+                    value: 'pdf',
+                    label: '导出 PDF 并分析',
+                    description: '先打开起始 URL 导出 PDF，再交给 Agent',
+                  },
+                  {
+                    value: 'script',
+                    label: '脚本 / 产物分析',
+                    description: '不导出 PDF，基于脚本、URL 与已有产物',
+                  },
+                ]}
+              />
+            </label>
+            <div className="pw-modal-actions">
+              <button type="button" className="btn-secondary" onClick={() => setPendingAgentAnalyze(null)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                disabled={!pendingAgentAnalyze.prompt.trim()}
+                onClick={confirmAgentAnalyze}
+              >
+                {pendingAgentAnalyze.ids.length > 1
+                  ? `确定并分析 (${pendingAgentAnalyze.ids.length})`
+                  : '确定并分析'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

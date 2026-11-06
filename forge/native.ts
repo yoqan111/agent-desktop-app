@@ -3,7 +3,7 @@ import { cp, mkdir, readdir, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 
 /** Packages Vite marks external that must still ship in the asar/unpacked tree. */
-export const RUNTIME_PACKAGES = ['ffmpeg-static', 'ffprobe-static'] as const;
+export const RUNTIME_PACKAGES = ['ffmpeg-static', 'ffprobe-static', '@cursor/sdk'] as const;
 
 const FFMPEG_KEEP = new Set([
   'package.json',
@@ -166,4 +166,14 @@ export async function copyRuntimePackages(
 
   await copyFfmpeg(sourceRoot, destRoot);
   await copyFfprobeForTarget(sourceRoot, destRoot, platform, arch);
+
+  // Cursor SDK is Vite-external; ship the package (and platform helpers if present).
+  const cursorScope = path.join(sourceRoot, '@cursor');
+  if (existsSync(cursorScope)) {
+    await cp(cursorScope, path.join(destRoot, '@cursor'), {
+      recursive: true,
+      force: true,
+      dereference: true,
+    });
+  }
 }

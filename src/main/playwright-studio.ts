@@ -22,6 +22,7 @@ import type {
   PlaywrightArtifactKind,
   PlaywrightAssertRequest,
   PlaywrightAssertTemplate,
+  PlaywrightAuthBeforePlay,
   PlaywrightBatchPlayRequest,
   PlaywrightBrowser,
   PlaywrightCaptureRequest,
@@ -113,7 +114,7 @@ export default defineConfig({
   use: {
     // retries=0, so retain-on-failure (not on-first-retry) is required to keep traces.
     trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
+    screenshot: 'off',
     video: 'retain-on-failure',
   },
   projects: [
@@ -167,13 +168,20 @@ function readMeta(id: string): PlaywrightWorkflowMeta {
   if (!existsSync(file)) {
     throw new Error('工作流不存在。');
   }
-  return JSON.parse(readFileSync(file, 'utf8')) as PlaywrightWorkflowMeta;
+  const meta = JSON.parse(readFileSync(file, 'utf8')) as PlaywrightWorkflowMeta;
+  // Always sync from disk — meta.hasAuth can go stale after manual deletes / failed saves.
+  meta.hasAuth = existsSync(authPathFor(id));
+  return meta;
 }
 
 function writeMeta(meta: PlaywrightWorkflowMeta): void {
   const dir = workflowDir(meta.id);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(metaPath(meta.id), `${JSON.stringify(meta, null, 2)}\n`, 'utf8');
+  const next: PlaywrightWorkflowMeta = {
+    ...meta,
+    hasAuth: existsSync(authPathFor(meta.id)),
+  };
+  writeFileSync(metaPath(meta.id), `${JSON.stringify(next, null, 2)}\n`, 'utf8');
 }
 
 function scriptPathFor(meta: PlaywrightWorkflowMeta): string {
@@ -182,6 +190,141 @@ function scriptPathFor(meta: PlaywrightWorkflowMeta): string {
 
 function authPathFor(id: string): string {
   return path.join(studioRoot(), 'auth', `${id}.json`);
+}
+
+function normalizeAuthBeforePlay(value: unknown): PlaywrightAuthBeforePlay {
+  if (value === 'always' || value === 'off' || value === 'if-missing-auth') {
+    return value;
+  }
+  return 'if-missing-auth';
+}
+
+function injectStorageSave(script: string, outPath: string): string {
+  const line = `  await page.context().storageState({ path: ${JSON.stringify(outPath)} });\n`;
+  const marker = '// --- Studio 保存登录态 ---';
+  if (script.includes(marker)) {
+    return script;
+  }
+  const block = `  ${marker}\n${line}`;
+  const closeIdx = script.lastIndexOf('});');
+  if (closeIdx >= 0) {
+    return `${script.slice(0, closeIdx)}${block}${script.slice(closeIdx)}`;
+  }
+  return `${script.trimEnd()}\n${block}\n`;
+}
+
+/** Export cookies/localStorage from Studio persistent profile into a storageState JSON. */
+async function exportStorageFromPersistentProfile(
+  browser: PlaywrightBrowser,
+  outPath: string,
+): Promise<boolean> {
+  const profileDir = persistentProfileDir(browser);
+  if (!existsSync(profileDir)) {
+    return false;
+  }
+  const moduleDir = resolvePlaywrightNodeModule();
+  if (!moduleDir) {
+    return false;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const playwright = requireFromMain(moduleDir) as {
+    chromium: { launchPersistentContext: (userDataDir: string, opts?: object) => Promise<{
+      storageState: (opts: { path: string }) => Promise<unknown>;
+      close: () => Promise<void>;
+    }> };
+    firefox: { launchPersistentContext?: (userDataDir: string, opts?: object) => Promise<{
+      storageState: (opts: { path: string }) => Promise<unknown>;
+      close: () => Promise<void>;
+    }> };
+    webkit: { launchPersistentContext?: (userDataDir: string, opts?: object) => Promise<{
+      storageState: (opts: { path: string }) => Promise<unknown>;
+      close: () => Promise<void>;
+    }> };
+  };
+
+  const launchOpts: Record<string, unknown> = { headless: true };
+  if (browser === 'chrome' || browser === 'msedge') {
+    launchOpts.channel = browser;
+  }
+
+  const browserType = browser === 'firefox'
+    ? playwright.firefox
+    : browser === 'webkit'
+      ? playwright.webkit
+      : playwright.chromium;
+  if (!browserType?.launchPersistentContext) {
+    return false;
+  }
+
+  let context: {
+    storageState: (opts: { path: string }) => Promise<unknown>;
+    close: () => Promise<void>;
+  } | null = null;
+  try {
+    context = await browserType.launchPersistentContext(profileDir, launchOpts);
+    mkdirSync(path.dirname(outPath), { recursive: true });
+    await context.storageState({ path: outPath });
+    return existsSync(outPath);
+  } catch {
+    return false;
+  } finally {
+    if (context) {
+      try {
+        await context.close();
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+async function ensureAuthFileForPlay(meta: PlaywrightWorkflowMeta): Promise<string | null> {
+  const authFile = authPathFor(meta.id);
+  if (existsSync(authFile)) {
+    return authFile;
+  }
+  if (!meta.usePersistentProfile) {
+    return null;
+  }
+  const exported = await exportStorageFromPersistentProfile(meta.browser, authFile);
+  if (exported) {
+    const next = readMeta(meta.id);
+    next.hasAuth = true;
+    next.updatedAt = nowIso();
+    writeMeta(next);
+    return authFile;
+  }
+  return null;
+}
+
+function assertNoAuthCycle(workflowId: string, authWorkflowId: string): void {
+  if (workflowId === authWorkflowId) {
+    throw new Error('不能把自身设为登录前置工作流。');
+  }
+  const seen = new Set<string>([workflowId]);
+  let current: string | undefined = authWorkflowId;
+  while (current) {
+    if (seen.has(current)) {
+      throw new Error('登录前置工作流存在循环引用，请检查配置。');
+    }
+    seen.add(current);
+    let meta: PlaywrightWorkflowMeta;
+    try {
+      meta = readMeta(current);
+    } catch {
+      throw new Error('登录前置工作流不存在。');
+    }
+    current = meta.authWorkflowId;
+  }
+}
+
+function shouldRunAuthPrecondition(meta: PlaywrightWorkflowMeta): boolean {
+  const authId = (meta.authWorkflowId || '').trim();
+  if (!authId) return false;
+  const policy = normalizeAuthBeforePlay(meta.authBeforePlay);
+  if (policy === 'off') return false;
+  if (policy === 'always') return true;
+  return !existsSync(authPathFor(meta.id));
 }
 
 function slugify(name: string): string {
@@ -676,7 +819,7 @@ export default defineConfig({
   use: {
     ${storageLine}
     trace: 'retain-on-failure',
-    screenshot: 'only-on-failure',
+    screenshot: 'off',
     video: ${JSON.stringify(videoMode)},
     launchOptions: {
       slowMo: ${slowMo},
@@ -888,17 +1031,18 @@ export async function startRecord(
     args.push('--device', device);
   }
 
-  // Persistent profile keeps cookies across recordings (Studio-owned dir, not daily Chrome).
-  if (usePersistentProfile) {
-    args.push('--user-data-dir', persistentProfileDir(browser));
-  }
-
-  if (request.loadAuthFromId) {
-    const loadPath = authPathFor(request.loadAuthFromId);
+  // --load-storage (storageState JSON) conflicts with --user-data-dir persistent context.
+  // Prefer explicit login-state reuse when the user picked one.
+  const loadAuthFromId = request.loadAuthFromId?.trim() || '';
+  if (loadAuthFromId) {
+    const loadPath = authPathFor(loadAuthFromId);
     if (!existsSync(loadPath)) {
-      throw new Error('指定的登录态文件不存在。');
+      throw new Error('指定的登录态文件不存在。请先在对应工作流录制并保存登录态，或在详情页「刷新登录态」。');
     }
     args.push('--load-storage', loadPath);
+  } else if (usePersistentProfile) {
+    // Persistent profile keeps cookies across recordings (Studio-owned dir, not daily Chrome).
+    args.push('--user-data-dir', persistentProfileDir(browser));
   }
 
   const saveAuth = Boolean(request.saveAuth);
@@ -936,9 +1080,11 @@ export async function startRecord(
     runId,
     phase: 'recording',
     percent: 5,
-    message: usePersistentProfile
-      ? `已启动 Codegen（持久登录目录：browser-profiles/${browser}），请在弹出的浏览器中操作`
-      : '已启动 Codegen，请在弹出的浏览器中操作',
+    message: loadAuthFromId
+      ? `已启动 Codegen（已加载登录态：${loadAuthFromId.slice(0, 8)}…），请在弹出的浏览器中操作`
+      : usePersistentProfile
+        ? `已启动 Codegen（持久登录目录：browser-profiles/${browser}），请在弹出的浏览器中操作`
+        : '已启动 Codegen，请在弹出的浏览器中操作',
   });
 
   child.on('error', (error) => {
@@ -954,38 +1100,52 @@ export async function startRecord(
       return;
     }
     activeJob = null;
-    const current = readMeta(id);
-    // If codegen wrote nothing beyond starter, keep starter; otherwise keep recorded script.
-    if (saveAuth && existsSync(authOut)) {
-      current.hasAuth = true;
-    }
-    current.updatedAt = nowIso();
-    current.lastRunAt = nowIso();
-    if (code === 0 || code === null) {
-      current.lastRunStatus = 'idle';
-      current.lastRunMessage = '录制结束，可回放或编辑脚本';
-      writeMeta(current);
-      emit({
-        workflowId: id,
-        runId,
-        phase: 'passed',
-        percent: 100,
-        message: current.lastRunMessage,
-        exitCode: code,
-      });
-    } else {
-      current.lastRunStatus = 'failed';
-      current.lastRunMessage = `录制进程退出码 ${code}`;
-      writeMeta(current);
-      emit({
-        workflowId: id,
-        runId,
-        phase: 'failed',
-        percent: 0,
-        message: current.lastRunMessage,
-        exitCode: code,
-      });
-    }
+    const finish = async () => {
+      const current = readMeta(id);
+      // If codegen wrote nothing beyond starter, keep starter; otherwise keep recorded script.
+      if (saveAuth && existsSync(authOut)) {
+        current.hasAuth = true;
+      }
+      // Persistent profile login lives in user-data-dir; export storageState so playback can reuse it.
+      if ((code === 0 || code === null) && usePersistentProfile && !existsSync(authOut)) {
+        const exported = await exportStorageFromPersistentProfile(browser, authOut);
+        if (exported) {
+          current.hasAuth = true;
+        }
+      } else if ((code === 0 || code === null) && usePersistentProfile && existsSync(authOut)) {
+        current.hasAuth = true;
+      }
+      current.updatedAt = nowIso();
+      current.lastRunAt = nowIso();
+      if (code === 0 || code === null) {
+        current.lastRunStatus = 'idle';
+        current.lastRunMessage = current.hasAuth
+          ? '录制结束，已保存登录态，可回放或编辑脚本'
+          : '录制结束，可回放或编辑脚本';
+        writeMeta(current);
+        emit({
+          workflowId: id,
+          runId,
+          phase: 'passed',
+          percent: 100,
+          message: current.lastRunMessage,
+          exitCode: code,
+        });
+      } else {
+        current.lastRunStatus = 'failed';
+        current.lastRunMessage = `录制进程退出码 ${code}`;
+        writeMeta(current);
+        emit({
+          workflowId: id,
+          runId,
+          phase: 'failed',
+          percent: 0,
+          message: current.lastRunMessage,
+          exitCode: code,
+        });
+      }
+    };
+    void finish();
   });
 
   if (waitPromise) {
@@ -999,7 +1159,6 @@ export async function playWorkflow(
   request: PlaywrightPlayRequest,
   options?: { wait?: boolean; timeoutMs?: number },
 ): Promise<{ runId: string; runEvent?: PlaywrightRunEvent; workflow?: PlaywrightWorkflowDetail }> {
-  assertNoActiveJob();
   const root = studioRoot();
   if (!playwrightReady()) {
     throw new Error('未找到 Playwright。请先安装依赖并点击「安装浏览器」。');
@@ -1030,6 +1189,65 @@ export async function playWorkflow(
     writeMeta(meta);
   }
 
+  // Login precondition: run linked auth workflow first, then refresh this workflow's storageState.
+  if (!request.skipAuthPrecondition && shouldRunAuthPrecondition(meta)) {
+    const authId = (meta.authWorkflowId || '').trim();
+    assertNoAuthCycle(meta.id, authId);
+    readMeta(authId);
+    const authMode: PlaywrightRunMode = (request.mode === 'ui' || request.mode === 'debug')
+      ? 'headed'
+      : (request.mode || 'headed');
+    const targetAuthPath = authPathFor(meta.id);
+    mkdirSync(path.dirname(targetAuthPath), { recursive: true });
+    emit({
+      workflowId: meta.id,
+      runId: 'auth-precondition',
+      phase: 'running',
+      percent: 3,
+      message: `先执行登录前置工作流…`,
+    });
+    const authPlay = await playWorkflow({
+      id: authId,
+      mode: authMode,
+      browser,
+      slowMoMs,
+      skipAuthPrecondition: true,
+      saveStorageTo: targetAuthPath,
+    }, { wait: true, timeoutMs: options?.timeoutMs });
+    if (authPlay.runEvent?.phase !== 'passed') {
+      const message = authPlay.runEvent?.message || '登录前置工作流失败';
+      const failed = readMeta(meta.id);
+      failed.updatedAt = nowIso();
+      failed.lastRunAt = nowIso();
+      failed.lastRunStatus = 'failed';
+      failed.lastRunMessage = `登录前置失败：${message}`;
+      writeMeta(failed);
+      emit({
+        workflowId: meta.id,
+        runId: authPlay.runId,
+        phase: 'failed',
+        percent: 0,
+        message: failed.lastRunMessage,
+      });
+      throw new Error(failed.lastRunMessage);
+    }
+    if (existsSync(targetAuthPath)) {
+      const next = readMeta(meta.id);
+      next.hasAuth = true;
+      next.updatedAt = nowIso();
+      writeMeta(next);
+    }
+    emit({
+      workflowId: meta.id,
+      runId: authPlay.runId,
+      phase: 'running',
+      percent: 8,
+      message: '登录态已刷新，开始回放业务流…',
+    });
+  }
+
+  assertNoActiveJob();
+
   // Bundled browsers must match @playwright/test revision (e.g. chromium-1194).
   // System Chrome / Edge skip browser download, but ffmpeg is still required for video.
   const ensured = await ensurePlaywrightRuntime(browser);
@@ -1041,20 +1259,36 @@ export async function playWorkflow(
 
   const mode = request.mode || 'headed';
   const { command, prefixArgs } = resolvePlaywrightCli();
-  const authFile = authPathFor(meta.id);
+  // Prefer existing storageState; if missing but recorded with a persistent profile, export once.
+  const authFile = (await ensureAuthFileForPlay(meta)) || authPathFor(meta.id);
   const runId = randomUUID();
   const outputDir = artifactRunDir(meta.id, runId);
+  // Default: refresh storageState after successful play so the next run keeps cookies.
+  const saveStorageTo = (request.saveStorageTo || '').trim()
+    || (request.saveAuthAfterPlay === false ? '' : authPathFor(meta.id));
+  let tempScriptPath: string | null = null;
+  let testFilterOverride: string | null = null;
+  if (saveStorageTo) {
+    mkdirSync(path.dirname(saveStorageTo), { recursive: true });
+    const original = readFileSync(scriptFile, 'utf8');
+    const patched = injectStorageSave(original, saveStorageTo);
+    tempScriptPath = path.join(workflowDir(meta.id), `__studio_save_${runId}.spec.ts`);
+    writeFileSync(tempScriptPath, patched.endsWith('\n') ? patched : `${patched}\n`, 'utf8');
+    testFilterOverride = `__studio_save_${runId}`;
+  }
   const { configPath, testFilter } = writeRunConfig({
     root,
     meta,
     slowMoMs,
+    // Always load cookies when available (including runs that also save state at the end).
     authFile: existsSync(authFile) ? authFile : undefined,
     videoEnabled: ensured.videoEnabled,
     outputDir,
   });
+  const effectiveFilter = testFilterOverride || testFilter;
 
   // Pass filter relative to testDir. Absolute paths are treated as RegExp and break discovery.
-  const args = [...prefixArgs, 'test', testFilter, '--config', configPath];
+  const args = [...prefixArgs, 'test', effectiveFilter, '--config', configPath];
 
   if (mode === 'headed') {
     args.push('--headed');
@@ -1070,11 +1304,11 @@ export async function playWorkflow(
 
   const logFile = path.join(root, 'runs', `${runId}.log`);
   const runtimeNote = ensured.videoEnabled
-    ? 'video=retain-on-failure · trace=retain-on-failure'
-    : 'video=off (ffmpeg missing) · trace=retain-on-failure';
+    ? 'screenshot=off · video=retain-on-failure · trace=retain-on-failure'
+    : 'screenshot=off · video=off (ffmpeg missing) · trace=retain-on-failure';
   writeFileSync(
     logFile,
-    `# play ${meta.id}\nbrowser=${meta.browser}\nscript=${scriptFile}\nfilter=${testFilter}\noutput=${outputDir}\n${runtimeNote}\n$ ${command} ${args.join(' ')}\n\n`,
+    `# play ${meta.id}\nbrowser=${meta.browser}\nscript=${scriptFile}\nfilter=${effectiveFilter}\noutput=${outputDir}\nauth=${existsSync(authFile) ? authFile : '-'}\nsaveStorage=${saveStorageTo || '-'}\n${runtimeNote}\n$ ${command} ${args.join(' ')}\n\n`,
     'utf8',
   );
   if (!ensured.videoEnabled && ensured.message) {
@@ -1110,9 +1344,12 @@ export async function playWorkflow(
     runId,
     phase: 'running',
     percent: 10,
-    message: ensured.videoEnabled
-      ? `开始回放 · ${mode}`
-      : `开始回放 · ${mode}（未检测到 ffmpeg，已关闭失败视频）`,
+    message: [
+      `开始回放 · ${mode}`,
+      existsSync(authFile) ? '已加载登录态' : null,
+      saveStorageTo ? '结束后将刷新登录态' : null,
+      ensured.videoEnabled ? null : '未检测到 ffmpeg，已关闭失败视频',
+    ].filter(Boolean).join(' · '),
   });
 
   child.on('error', (error) => {
@@ -1136,6 +1373,13 @@ export async function playWorkflow(
       return;
     }
     activeJob = null;
+    if (tempScriptPath && existsSync(tempScriptPath)) {
+      try {
+        rmSync(tempScriptPath, { force: true });
+      } catch {
+        // ignore
+      }
+    }
     const artifacts = collectArtifacts(meta.id, runId);
     const current = readMeta(meta.id);
     current.updatedAt = nowIso();
@@ -1143,10 +1387,28 @@ export async function playWorkflow(
     current.lastRunId = runId;
     current.lastArtifactCount = artifacts.length;
     if (code === 0) {
+      if (saveStorageTo && existsSync(saveStorageTo)) {
+        current.hasAuth = true;
+        // If we saved into another workflow's auth path, mark that workflow too.
+        try {
+          const authDir = path.join(studioRoot(), 'auth');
+          const base = path.basename(saveStorageTo, '.json');
+          if (path.resolve(path.dirname(saveStorageTo)) === path.resolve(authDir) && base && base !== meta.id) {
+            const target = readMeta(base);
+            target.hasAuth = true;
+            target.updatedAt = nowIso();
+            writeMeta(target);
+          }
+        } catch {
+          // ignore cross-meta update failures
+        }
+      }
       current.lastRunStatus = 'passed';
-      current.lastRunMessage = artifacts.length
-        ? `回放通过（${artifacts.length} 个产物）`
-        : '回放通过';
+      current.lastRunMessage = saveStorageTo && existsSync(saveStorageTo)
+        ? '回放通过（已刷新登录态）'
+        : artifacts.length
+          ? `回放通过（${artifacts.length} 个产物）`
+          : '回放通过';
       writeMeta(current);
       emit({
         workflowId: meta.id,
@@ -1236,6 +1498,25 @@ export function updateWorkflow(request: PlaywrightUpdateRequest): PlaywrightWork
   }
   if (request.slowMoMs !== undefined) {
     meta.slowMoMs = normalizeSlowMoMs(request.slowMoMs, 0);
+  }
+  if (request.authWorkflowId !== undefined) {
+    const nextAuth = request.authWorkflowId === null ? '' : String(request.authWorkflowId).trim();
+    if (!nextAuth) {
+      meta.authWorkflowId = undefined;
+    } else {
+      assertNoAuthCycle(meta.id, nextAuth);
+      readMeta(nextAuth);
+      meta.authWorkflowId = nextAuth;
+      if (!meta.authBeforePlay) {
+        meta.authBeforePlay = 'if-missing-auth';
+      }
+    }
+  }
+  if (request.authBeforePlay !== undefined) {
+    meta.authBeforePlay = normalizeAuthBeforePlay(request.authBeforePlay);
+  }
+  if (request.isAuthWorkflow !== undefined) {
+    meta.isAuthWorkflow = Boolean(request.isAuthWorkflow) || undefined;
   }
   if (typeof request.script === 'string') {
     writeFileSync(scriptPathFor(meta), request.script, 'utf8');

@@ -10,8 +10,17 @@ export type PlaywrightAssertTemplate = 'url' | 'title' | 'body' | 'all';
 
 export type PlaywrightCaptureKind = 'screenshot' | 'pdf';
 
+/** When to run the linked login workflow before playback. */
+export type PlaywrightAuthBeforePlay = 'off' | 'if-missing-auth' | 'always';
+
 /** Default headed-playback slowMo for newly recorded workflows (ms between actions). */
 export const PLAYWRIGHT_DEFAULT_SLOW_MO_MS = 500;
+
+export const PLAYWRIGHT_AUTH_BEFORE_PLAY: PlaywrightAuthBeforePlay[] = [
+  'if-missing-auth',
+  'always',
+  'off',
+];
 
 export interface PlaywrightArtifact {
   kind: PlaywrightArtifactKind;
@@ -35,6 +44,20 @@ export interface PlaywrightWorkflowMeta {
   usePersistentProfile?: boolean;
   /** Preferred playback slowMo in ms; filled at record time, updated when user adjusts and plays. */
   slowMoMs?: number;
+  /**
+   * Optional login workflow to run before this one.
+   * After a successful login run, storageState is copied onto this workflow.
+   */
+  authWorkflowId?: string;
+  /**
+   * When to run authWorkflowId. Default if-missing-auth when authWorkflowId is set.
+   * - if-missing-auth: only when this workflow has no storageState file
+   * - always: every playback
+   * - off: never auto-run (manual only)
+   */
+  authBeforePlay?: PlaywrightAuthBeforePlay;
+  /** Mark this workflow as a login/setup flow (UI hint). */
+  isAuthWorkflow?: boolean;
   createdAt: string;
   updatedAt: string;
   lastRunAt?: string;
@@ -80,6 +103,19 @@ export interface PlaywrightPlayRequest {
   /** Override workflow slowMo for this run; omit to use meta.slowMoMs. */
   slowMoMs?: number;
   workers?: number;
+  /** Skip linked authWorkflowId precondition (used internally to avoid recursion). */
+  skipAuthPrecondition?: boolean;
+  /**
+   * After this run succeeds, save browser storageState to this path
+   * (injected into a temporary copy of the script).
+   */
+  saveStorageTo?: string;
+  /**
+   * After a successful play, save storageState back to this workflow's auth file.
+   * Default true so cookies from the run persist for the next play.
+   * Pass false to skip.
+   */
+  saveAuthAfterPlay?: boolean;
 }
 
 export interface PlaywrightBatchPlayRequest {
@@ -124,6 +160,9 @@ export interface PlaywrightUpdateRequest {
   browser?: PlaywrightBrowser;
   device?: string;
   slowMoMs?: number;
+  authWorkflowId?: string | null;
+  authBeforePlay?: PlaywrightAuthBeforePlay;
+  isAuthWorkflow?: boolean;
 }
 
 export interface PlaywrightRunEvent {

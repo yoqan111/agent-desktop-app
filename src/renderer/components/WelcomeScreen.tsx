@@ -193,7 +193,7 @@ export function WelcomeScreen({
             <span className="automation-mark" aria-hidden>P</span>
             <div className="automation-copy">
               <strong>Playwright Studio</strong>
-              <span>录制浏览器操作路径，管理脚本并一键回放。不依赖视频 / 图片 / 音频素材。</span>
+              <span>录制流程、管理登录态与产物，支持批量回放和 Agent 分析。与媒体处理相互独立。</span>
             </div>
             <em>进入</em>
           </button>

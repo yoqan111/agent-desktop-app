@@ -1,6 +1,26 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import started from 'electron-squirrel-startup';
 import { grantInput } from './main/access';
+import {
+  analyzeWorkflow,
+  cancelAgentRun,
+  clearAgentSession,
+  createAgentSession,
+  deleteAgentMessages,
+  deleteAgentSession,
+  getAgentSession,
+  getAgentStatus,
+  initAgentBridge,
+  listAgentModels,
+  listAgentSessions,
+  openLocalPath,
+  revealLocalPath,
+  sendAgentMessage,
+  setAgentConfig,
+  shutdownAgentBridge,
+  switchAgentSession,
+  updateAgentSession,
+} from './main/agent-bridge';
 import { startMcpServer, stopMcpServer } from './main/mcp-server';
 import { cleanupTempOutputs, exportTempFile } from './main/media';
 import { callTool } from './main/tools';
@@ -49,6 +69,15 @@ import type {
 } from './shared/media';
 import { PaymentIpc } from './shared/payment';
 import type { CreatePayOrderRequest, PayProduct } from './shared/payment';
+import { AgentIpc } from './shared/agent';
+import type {
+  AgentAnalyzeWorkflowRequest,
+  AgentCreateSessionRequest,
+  AgentDeleteMessagesRequest,
+  AgentSendRequest,
+  AgentSetConfigRequest,
+  AgentUpdateSessionRequest,
+} from './shared/agent';
 import { PlaywrightIpc } from './shared/playwright';
 import type {
   PlaywrightAssertRequest,
@@ -337,6 +366,50 @@ function registerIpcHandlers(): void {
   ipcMain.handle(PlaywrightIpc.setSchedule, (_event, payload: unknown) => {
     return setSchedule((payload || {}) as Partial<PlaywrightScheduleConfig>);
   });
+
+  for (const channel of Object.values(AgentIpc)) {
+    if (channel !== AgentIpc.event) {
+      ipcMain.removeHandler(channel);
+    }
+  }
+  ipcMain.handle(AgentIpc.status, () => getAgentStatus());
+  ipcMain.handle(AgentIpc.listModels, () => listAgentModels());
+  ipcMain.handle(AgentIpc.setConfig, (_event, payload: unknown) => {
+    return setAgentConfig((payload || {}) as AgentSetConfigRequest);
+  });
+  ipcMain.handle(AgentIpc.analyzeWorkflow, (_event, payload: unknown) => {
+    return analyzeWorkflow(payload as AgentAnalyzeWorkflowRequest);
+  });
+  ipcMain.handle(AgentIpc.send, (_event, payload: unknown) => {
+    return sendAgentMessage(payload as AgentSendRequest);
+  });
+  ipcMain.handle(AgentIpc.cancel, () => cancelAgentRun());
+  ipcMain.handle(AgentIpc.clearSession, () => clearAgentSession());
+  ipcMain.handle(AgentIpc.listSessions, () => listAgentSessions());
+  ipcMain.handle(AgentIpc.getSession, (_event, id: unknown) => {
+    return getAgentSession(String(id || ''));
+  });
+  ipcMain.handle(AgentIpc.createSession, (_event, payload: unknown) => {
+    return createAgentSession((payload || {}) as AgentCreateSessionRequest);
+  });
+  ipcMain.handle(AgentIpc.updateSession, (_event, payload: unknown) => {
+    return updateAgentSession((payload || {}) as AgentUpdateSessionRequest);
+  });
+  ipcMain.handle(AgentIpc.deleteSession, (_event, id: unknown) => {
+    return deleteAgentSession(String(id || ''));
+  });
+  ipcMain.handle(AgentIpc.deleteMessages, (_event, payload: unknown) => {
+    return deleteAgentMessages((payload || {}) as AgentDeleteMessagesRequest);
+  });
+  ipcMain.handle(AgentIpc.switchSession, (_event, id: unknown) => {
+    return switchAgentSession(String(id || ''));
+  });
+  ipcMain.handle(AgentIpc.openLocalPath, (_event, targetPath: unknown) => {
+    return openLocalPath(String(targetPath || ''));
+  });
+  ipcMain.handle(AgentIpc.revealLocalPath, (_event, targetPath: unknown) => {
+    return revealLocalPath(String(targetPath || ''));
+  });
 }
 
 app.on('ready', () => {
@@ -350,15 +423,21 @@ app.on('ready', () => {
   }
   installWindowMenu();
   startUpdater();
-  void startMcpServer().catch((error) => {
-    console.error('startMcpServer', error);
-  });
+  void startMcpServer()
+    .then(() => {
+      initAgentBridge();
+    })
+    .catch((error) => {
+      console.error('startMcpServer', error);
+      initAgentBridge();
+    });
   ensureScheduleTimer();
   createAppWindow();
 });
 
 app.on('before-quit', () => {
   void stopJob();
+  void shutdownAgentBridge();
   stopMcpServer();
   cleanupTempOutputs();
 });

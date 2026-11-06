@@ -29,6 +29,19 @@ import type {
   PayProduct,
   PaymentApi,
 } from './shared/payment';
+import { AgentIpc } from './shared/agent';
+import type {
+  AgentAnalyzeWorkflowRequest,
+  AgentApi,
+  AgentCreateSessionRequest,
+  AgentDeleteMessagesRequest,
+  AgentSendRequest,
+  AgentSetConfigRequest,
+  AgentStreamEvent,
+  AgentUpdateSessionRequest,
+} from './shared/agent';
+import { ConfirmIpc } from './shared/confirm';
+import type { ConfirmAskPayload } from './shared/confirm';
 import { PlaywrightIpc } from './shared/playwright';
 import type {
   PlaywrightApi,
@@ -135,3 +148,42 @@ const playwright: PlaywrightApi = {
 };
 
 contextBridge.exposeInMainWorld('playwright', playwright);
+
+const agent: AgentApi = {
+  getStatus: () => ipcRenderer.invoke(AgentIpc.status),
+  listModels: () => ipcRenderer.invoke(AgentIpc.listModels),
+  setConfig: (request: AgentSetConfigRequest) => ipcRenderer.invoke(AgentIpc.setConfig, request),
+  analyzeWorkflow: (request: AgentAnalyzeWorkflowRequest) => ipcRenderer.invoke(AgentIpc.analyzeWorkflow, request),
+  send: (request: AgentSendRequest) => ipcRenderer.invoke(AgentIpc.send, request),
+  cancel: () => ipcRenderer.invoke(AgentIpc.cancel),
+  clearSession: () => ipcRenderer.invoke(AgentIpc.clearSession),
+  listSessions: () => ipcRenderer.invoke(AgentIpc.listSessions),
+  getSession: (id: string) => ipcRenderer.invoke(AgentIpc.getSession, id),
+  createSession: (request?: AgentCreateSessionRequest) => ipcRenderer.invoke(AgentIpc.createSession, request || {}),
+  updateSession: (request: AgentUpdateSessionRequest) => ipcRenderer.invoke(AgentIpc.updateSession, request),
+  deleteSession: (id: string) => ipcRenderer.invoke(AgentIpc.deleteSession, id),
+  switchSession: (id: string) => ipcRenderer.invoke(AgentIpc.switchSession, id),
+  deleteMessages: (request: AgentDeleteMessagesRequest) => ipcRenderer.invoke(AgentIpc.deleteMessages, request),
+  openLocalPath: (targetPath: string) => ipcRenderer.invoke(AgentIpc.openLocalPath, targetPath),
+  revealLocalPath: (targetPath: string) => ipcRenderer.invoke(AgentIpc.revealLocalPath, targetPath),
+  onEvent: (handler) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: AgentStreamEvent) => handler(payload);
+    ipcRenderer.on(AgentIpc.event, listener);
+    return () => ipcRenderer.removeListener(AgentIpc.event, listener);
+  },
+};
+
+contextBridge.exposeInMainWorld('agent', agent);
+
+const confirmUi = {
+  onAskFromMain: (handler: (payload: ConfirmAskPayload) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: ConfirmAskPayload) => handler(payload);
+    ipcRenderer.on(ConfirmIpc.ask, listener);
+    return () => ipcRenderer.removeListener(ConfirmIpc.ask, listener);
+  },
+  respondToMain: (requestId: string, ok: boolean) => {
+    ipcRenderer.send(ConfirmIpc.result, requestId, ok);
+  },
+};
+
+contextBridge.exposeInMainWorld('confirmUi', confirmUi);

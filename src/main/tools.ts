@@ -1,4 +1,3 @@
-import { BrowserWindow, dialog } from 'electron';
 import {
   changeSpeed,
   compressMedia,
@@ -20,6 +19,7 @@ import {
   adjustVideo,
 } from './media';
 import { assertAgentPath, grantInput } from './access';
+import { askUserConfirm } from './confirm';
 import {
   capturePage,
   createWorkflowFromScript,
@@ -91,12 +91,14 @@ import {
 } from '../shared/media';
 import {
   PLAYWRIGHT_ASSERT_TEMPLATES,
+  PLAYWRIGHT_AUTH_BEFORE_PLAY,
   PLAYWRIGHT_BROWSERS,
   PLAYWRIGHT_DEVICES,
   PLAYWRIGHT_RUN_MODES,
 } from '../shared/playwright';
 import type {
   PlaywrightAssertTemplate,
+  PlaywrightAuthBeforePlay,
   PlaywrightBrowser,
   PlaywrightCaptureKind,
   PlaywrightRunMode,
@@ -200,19 +202,14 @@ const tools: ToolDefinition[] = [
     },
     run: async (args) => {
       const pathValue = requiredString(asObject(args), 'path');
-      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-      const prompt = {
-        type: 'question' as const,
-        buttons: ['允许', '拒绝'],
-        defaultId: 1,
-        cancelId: 1,
-        message: '外部 Agent 请求处理这个文件',
-        detail: pathValue,
-      };
-      const choice = win
-        ? await dialog.showMessageBox(win, prompt)
-        : await dialog.showMessageBox(prompt);
-      if (choice.response !== 0) {
+      const allowed = await askUserConfirm({
+        title: '外部 Agent 请求处理这个文件',
+        message: pathValue,
+        confirmLabel: '允许',
+        cancelLabel: '拒绝',
+        danger: false,
+      });
+      if (!allowed) {
         throw new Error('用户拒绝了这个文件。');
       }
       const probe = await probeMedia(pathValue);
@@ -813,7 +810,7 @@ const tools: ToolDefinition[] = [
   },
   {
     name: 'playwright_update',
-    description: '更新工作流名称、备注、URL、浏览器或脚本内容。',
+    description: '更新工作流名称、备注、URL、浏览器、脚本或登录前置配置。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -824,12 +821,26 @@ const tools: ToolDefinition[] = [
         browser: { type: 'string', enum: PLAYWRIGHT_BROWSERS },
         device: { type: 'string' },
         script: { type: 'string', description: '替换整个脚本内容。' },
+        authWorkflowId: {
+          type: 'string',
+          description: '登录前置工作流 ID；传空字符串清除。',
+        },
+        authBeforePlay: {
+          type: 'string',
+          enum: PLAYWRIGHT_AUTH_BEFORE_PLAY,
+          description: 'if-missing-auth / always / off。',
+        },
+        isAuthWorkflow: {
+          type: 'boolean',
+          description: '标记为登录流。',
+        },
       },
       required: ['id'],
       additionalProperties: false,
     },
     run: async (args) => {
       const obj = asObject(args);
+      const authWorkflowId = optionalString(obj, 'authWorkflowId');
       return updateWorkflow({
         id: requiredString(obj, 'id'),
         name: optionalString(obj, 'name'),
@@ -838,6 +849,15 @@ const tools: ToolDefinition[] = [
         browser: oneOf(optionalString(obj, 'browser'), PLAYWRIGHT_BROWSERS, '浏览器') as PlaywrightBrowser | undefined,
         device: optionalString(obj, 'device'),
         script: optionalString(obj, 'script'),
+        authWorkflowId: authWorkflowId === undefined
+          ? undefined
+          : (authWorkflowId.trim() ? authWorkflowId.trim() : null),
+        authBeforePlay: oneOf(
+          optionalString(obj, 'authBeforePlay'),
+          PLAYWRIGHT_AUTH_BEFORE_PLAY,
+          '登录前置策略',
+        ) as PlaywrightAuthBeforePlay | undefined,
+        isAuthWorkflow: optionalBoolean(obj, 'isAuthWorkflow'),
       });
     },
   },
@@ -924,6 +944,14 @@ const tools: ToolDefinition[] = [
           type: 'number',
           description: '放慢毫秒数；省略则使用工作流记录的 slowMoMs（默认 500）。',
         },
+        skipAuthPrecondition: {
+          type: 'boolean',
+          description: '跳过登录前置工作流。',
+        },
+        saveAuthAfterPlay: {
+          type: 'boolean',
+          description: '回放成功后把 storageState 写回本工作流（用于刷新登录态）。',
+        },
         wait: { type: 'boolean', description: '是否等待结束。Agent 默认 true。' },
       },
       required: ['id'],
@@ -937,6 +965,8 @@ const tools: ToolDefinition[] = [
         mode: oneOf(optionalString(obj, 'mode'), PLAYWRIGHT_RUN_MODES, '回放模式') as PlaywrightRunMode | undefined,
         browser: oneOf(optionalString(obj, 'browser'), PLAYWRIGHT_BROWSERS, '浏览器') as PlaywrightBrowser | undefined,
         slowMoMs: optionalNumber(obj, 'slowMoMs'),
+        skipAuthPrecondition: optionalBoolean(obj, 'skipAuthPrecondition'),
+        saveAuthAfterPlay: optionalBoolean(obj, 'saveAuthAfterPlay'),
       }, {
         wait: wait ?? ctx.source === 'agent',
       });

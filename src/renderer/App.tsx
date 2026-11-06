@@ -40,6 +40,7 @@ import { FileInfo } from './components/FileInfo';
 import type { CropRect } from './components/CropEditor';
 import { PaymentModal } from './components/PaymentModal';
 import { PlaywrightStudio } from './components/PlaywrightStudio';
+import { PwSelect } from './components/PwSelect';
 import { ResizeHandle } from './components/ResizeHandle';
 import { ResultAudioPlayer } from './components/ResultAudioPlayer';
 import { ResultVideoPlayer } from './components/ResultVideoPlayer';
@@ -1049,15 +1050,15 @@ export function App() {
               ) : (
                 <label className="field">
                   格式
-                  <select
+                  <PwSelect
                     value={format}
                     disabled={uiLocked}
-                    onChange={(event) => setFormat(event.target.value as typeof format)}
-                  >
-                    {formatOptions.map((item) => (
-                      <option key={item} value={item}>{item.toUpperCase()}</option>
-                    ))}
-                  </select>
+                    onChange={(value) => setFormat(value as typeof format)}
+                    options={formatOptions.map((item) => ({
+                      value: item,
+                      label: item.toUpperCase(),
+                    }))}
+                  />
                 </label>
               )}
               <p className="hint path-hint" title={filePath || undefined}>
@@ -1198,15 +1199,15 @@ export function App() {
                 <h3>高清目标</h3>
                 <label className="field">
                   目标
-                  <select
+                  <PwSelect
                     value={hdTarget}
                     disabled={uiLocked}
-                    onChange={(e) => setHdTarget(e.target.value as HdTarget)}
-                  >
-                    {HD_TARGETS.map((item) => (
-                      <option key={item} value={item}>{hdTargetLabel(item)}</option>
-                    ))}
-                  </select>
+                    onChange={(value) => setHdTarget(value as HdTarget)}
+                    options={HD_TARGETS.map((item) => ({
+                      value: item,
+                      label: hdTargetLabel(item),
+                    }))}
+                  />
                 </label>
                 <p className="hint">当前引擎：ffmpeg 放大 + 锐化（不缩小低于源尺寸）。</p>
               </div>
@@ -1217,15 +1218,15 @@ export function App() {
                 <h3>降噪参数</h3>
                 <label className="field">
                   强度
-                  <select
+                  <PwSelect
                     value={denoiseStrength}
                     disabled={uiLocked}
-                    onChange={(e) => setDenoiseStrength(e.target.value as DenoiseStrength)}
-                  >
-                    {DENOISE_STRENGTHS.map((item) => (
-                      <option key={item} value={item}>{denoiseLabel(item)}</option>
-                    ))}
-                  </select>
+                    onChange={(value) => setDenoiseStrength(value as DenoiseStrength)}
+                    options={DENOISE_STRENGTHS.map((item) => ({
+                      value: item,
+                      label: denoiseLabel(item),
+                    }))}
+                  />
                 </label>
                 <div className="num-grid">
                   <label className="field">
@@ -1266,11 +1267,15 @@ export function App() {
                 <h3>压缩档位</h3>
                 <label className="field">
                   档位
-                  <select value={compressPreset} disabled={uiLocked} onChange={(e) => setCompressPreset(e.target.value as CompressPreset)}>
-                    {COMPRESS_PRESETS.map((item) => (
-                      <option key={item} value={item}>{compressLabel(item)}</option>
-                    ))}
-                  </select>
+                  <PwSelect
+                    value={compressPreset}
+                    disabled={uiLocked}
+                    onChange={(value) => setCompressPreset(value as CompressPreset)}
+                    options={COMPRESS_PRESETS.map((item) => ({
+                      value: item,
+                      label: compressLabel(item),
+                    }))}
+                  />
                 </label>
                 <p className="hint">均衡适合分享；小体积会限制宽度。图片默认倾向 JPG 以明显减小体积。</p>
               </div>
@@ -1281,11 +1286,15 @@ export function App() {
                 <h3>方向</h3>
                 <label className="field">
                   操作
-                  <select value={orientOp} disabled={uiLocked} onChange={(e) => setOrientOp(e.target.value as OrientOp)}>
-                    {ORIENT_OPS.map((item) => (
-                      <option key={item} value={item}>{orientLabel(item)}</option>
-                    ))}
-                  </select>
+                  <PwSelect
+                    value={orientOp}
+                    disabled={uiLocked}
+                    onChange={(value) => setOrientOp(value as OrientOp)}
+                    options={ORIENT_OPS.map((item) => ({
+                      value: item,
+                      label: orientLabel(item),
+                    }))}
+                  />
                 </label>
               </div>
             ) : null}
@@ -1295,11 +1304,15 @@ export function App() {
                 <h3>目标比例</h3>
                 <label className="field">
                   比例
-                  <select value={aspectRatio} disabled={uiLocked} onChange={(e) => setAspectRatio(e.target.value as AspectRatio)}>
-                    {ASPECT_RATIOS.map((item) => (
-                      <option key={item} value={item}>{item}</option>
-                    ))}
-                  </select>
+                  <PwSelect
+                    value={aspectRatio}
+                    disabled={uiLocked}
+                    onChange={(value) => setAspectRatio(value as AspectRatio)}
+                    options={ASPECT_RATIOS.map((item) => ({
+                      value: item,
+                      label: item,
+                    }))}
+                  />
                 </label>
                 <p className="hint">从画面中心裁切，不拉伸。</p>
               </div>
@@ -1310,11 +1323,15 @@ export function App() {
                 <h3>速度</h3>
                 <label className="field">
                   倍率
-                  <select value={String(speedRate)} disabled={uiLocked} onChange={(e) => setSpeedRate(Number(e.target.value) as (typeof SPEED_RATES)[number])}>
-                    {SPEED_RATES.map((item) => (
-                      <option key={item} value={item}>{item}×</option>
-                    ))}
-                  </select>
+                  <PwSelect
+                    value={String(speedRate)}
+                    disabled={uiLocked}
+                    onChange={(value) => setSpeedRate(Number(value) as (typeof SPEED_RATES)[number])}
+                    options={SPEED_RATES.map((item) => ({
+                      value: String(item),
+                      label: `${item}×`,
+                    }))}
+                  />
                 </label>
                 <label className="field check-field">
                   <input type="checkbox" checked={changePitch} disabled={uiLocked} onChange={(e) => setChangePitch(e.target.checked)} />
@@ -1329,18 +1346,19 @@ export function App() {
                 <h3>音轨</h3>
                 <label className="field">
                   方式
-                  <select
+                  <PwSelect
                     value={extractMode}
                     disabled={uiLocked}
-                    onChange={(e) => {
-                      const next = e.target.value as ExtractMode;
+                    onChange={(value) => {
+                      const next = value as ExtractMode;
                       setExtractMode(next);
                       setFormat(next === 'audio' ? 'mp3' : 'mp4');
                     }}
-                  >
-                    <option value="audio">提取音频</option>
-                    <option value="mute">去掉声音</option>
-                  </select>
+                    options={[
+                      { value: 'audio', label: '提取音频' },
+                      { value: 'mute', label: '去掉声音' },
+                    ]}
+                  />
                 </label>
               </div>
             ) : null}
@@ -1361,10 +1379,15 @@ export function App() {
                 <h3>叠加</h3>
                 <label className="field">
                   类型
-                  <select value={stampMode} disabled={uiLocked} onChange={(e) => setStampMode(e.target.value as 'text' | 'logo')}>
-                    <option value="text">文字</option>
-                    <option value="logo">台标图片</option>
-                  </select>
+                  <PwSelect
+                    value={stampMode}
+                    disabled={uiLocked}
+                    onChange={(value) => setStampMode(value as 'text' | 'logo')}
+                    options={[
+                      { value: 'text', label: '文字' },
+                      { value: 'logo', label: '台标图片' },
+                    ]}
+                  />
                 </label>
                 {stampMode === 'text' ? (
                   <label className="field">
@@ -1381,11 +1404,15 @@ export function App() {
                 )}
                 <label className="field">
                   位置
-                  <select value={stampPos} disabled={uiLocked} onChange={(e) => setStampPos(e.target.value as StampPosition)}>
-                    {STAMP_POSITIONS.map((item) => (
-                      <option key={item} value={item}>{stampPosLabel(item)}</option>
-                    ))}
-                  </select>
+                  <PwSelect
+                    value={stampPos}
+                    disabled={uiLocked}
+                    onChange={(value) => setStampPos(value as StampPosition)}
+                    options={STAMP_POSITIONS.map((item) => ({
+                      value: item,
+                      label: stampPosLabel(item),
+                    }))}
+                  />
                 </label>
               </div>
             ) : null}
@@ -1395,11 +1422,15 @@ export function App() {
                 <h3>缩放</h3>
                 <label className="field">
                   方式
-                  <select value={resizeMode} disabled={uiLocked} onChange={(e) => setResizeMode(e.target.value as ResizeMode)}>
-                    {RESIZE_MODES.map((item) => (
-                      <option key={item} value={item}>{resizeModeLabel(item)}</option>
-                    ))}
-                  </select>
+                  <PwSelect
+                    value={resizeMode}
+                    disabled={uiLocked}
+                    onChange={(value) => setResizeMode(value as ResizeMode)}
+                    options={RESIZE_MODES.map((item) => ({
+                      value: item,
+                      label: resizeModeLabel(item),
+                    }))}
+                  />
                 </label>
                 <label className="field">
                   {resizeMode === 'percent' ? '百分比' : '像素'}
@@ -1421,19 +1452,20 @@ export function App() {
                 <h3>一起调整</h3>
                 <label className="field">
                   输出
-                  <select
+                  <PwSelect
                     value={adjustOutput}
                     disabled={uiLocked}
-                    onChange={(e) => {
-                      const next = e.target.value as VideoAdjustOutput;
+                    onChange={(value) => {
+                      const next = value as VideoAdjustOutput;
                       setAdjustOutput(next);
                       setFormat(next === 'audio' ? 'mp3' : next === 'frame' ? 'jpg' : 'mp4');
                     }}
-                  >
-                    <option value="video">视频</option>
-                    <option value="audio">只提取音频</option>
-                    <option value="frame">只截一帧</option>
-                  </select>
+                    options={[
+                      { value: 'video', label: '视频' },
+                      { value: 'audio', label: '只提取音频' },
+                      { value: 'frame', label: '只截一帧' },
+                    ]}
+                  />
                 </label>
                 <p className="hint">勾选的项目会在同一次处理里生效。</p>
 
@@ -1446,11 +1478,15 @@ export function App() {
                     {useOrient ? (
                       <label className="field">
                         方向
-                        <select value={orientOp} disabled={uiLocked} onChange={(e) => setOrientOp(e.target.value as OrientOp)}>
-                          {ORIENT_OPS.map((item) => (
-                            <option key={item} value={item}>{orientLabel(item)}</option>
-                          ))}
-                        </select>
+                        <PwSelect
+                          value={orientOp}
+                          disabled={uiLocked}
+                          onChange={(value) => setOrientOp(value as OrientOp)}
+                          options={ORIENT_OPS.map((item) => ({
+                            value: item,
+                            label: orientLabel(item),
+                          }))}
+                        />
                       </label>
                     ) : null}
 
@@ -1461,11 +1497,15 @@ export function App() {
                     {useAspect ? (
                       <label className="field">
                         比例
-                        <select value={aspectRatio} disabled={uiLocked} onChange={(e) => setAspectRatio(e.target.value as AspectRatio)}>
-                          {ASPECT_RATIOS.map((item) => (
-                            <option key={item} value={item}>{item}</option>
-                          ))}
-                        </select>
+                        <PwSelect
+                          value={aspectRatio}
+                          disabled={uiLocked}
+                          onChange={(value) => setAspectRatio(value as AspectRatio)}
+                          options={ASPECT_RATIOS.map((item) => ({
+                            value: item,
+                            label: item,
+                          }))}
+                        />
                       </label>
                     ) : null}
 
@@ -1479,11 +1519,15 @@ export function App() {
                           <>
                             <label className="field">
                               倍率
-                              <select value={String(speedRate)} disabled={uiLocked} onChange={(e) => setSpeedRate(Number(e.target.value) as (typeof SPEED_RATES)[number])}>
-                                {SPEED_RATES.map((item) => (
-                                  <option key={item} value={item}>{item}×</option>
-                                ))}
-                              </select>
+                              <PwSelect
+                                value={String(speedRate)}
+                                disabled={uiLocked}
+                                onChange={(value) => setSpeedRate(Number(value) as (typeof SPEED_RATES)[number])}
+                                options={SPEED_RATES.map((item) => ({
+                                  value: String(item),
+                                  label: `${item}×`,
+                                }))}
+                              />
                             </label>
                             <label className="field check-field">
                               <input type="checkbox" checked={changePitch} disabled={uiLocked} onChange={(e) => setChangePitch(e.target.checked)} />
@@ -1501,11 +1545,15 @@ export function App() {
                     {useCompress ? (
                       <label className="field">
                         档位
-                        <select value={compressPreset} disabled={uiLocked} onChange={(e) => setCompressPreset(e.target.value as CompressPreset)}>
-                          {COMPRESS_PRESETS.map((item) => (
-                            <option key={item} value={item}>{compressLabel(item)}</option>
-                          ))}
-                        </select>
+                        <PwSelect
+                          value={compressPreset}
+                          disabled={uiLocked}
+                          onChange={(value) => setCompressPreset(value as CompressPreset)}
+                          options={COMPRESS_PRESETS.map((item) => ({
+                            value: item,
+                            label: compressLabel(item),
+                          }))}
+                        />
                       </label>
                     ) : null}
 
@@ -1517,10 +1565,15 @@ export function App() {
                       <>
                         <label className="field">
                           类型
-                          <select value={stampMode} disabled={uiLocked} onChange={(e) => setStampMode(e.target.value as 'text' | 'logo')}>
-                            <option value="text">文字</option>
-                            <option value="logo">台标图片</option>
-                          </select>
+                          <PwSelect
+                            value={stampMode}
+                            disabled={uiLocked}
+                            onChange={(value) => setStampMode(value as 'text' | 'logo')}
+                            options={[
+                              { value: 'text', label: '文字' },
+                              { value: 'logo', label: '台标图片' },
+                            ]}
+                          />
                         </label>
                         {stampMode === 'text' ? (
                           <label className="field">
@@ -1537,11 +1590,15 @@ export function App() {
                         )}
                         <label className="field">
                           位置
-                          <select value={stampPos} disabled={uiLocked} onChange={(e) => setStampPos(e.target.value as StampPosition)}>
-                            {STAMP_POSITIONS.map((item) => (
-                              <option key={item} value={item}>{stampPosLabel(item)}</option>
-                            ))}
-                          </select>
+                          <PwSelect
+                            value={stampPos}
+                            disabled={uiLocked}
+                            onChange={(value) => setStampPos(value as StampPosition)}
+                            options={STAMP_POSITIONS.map((item) => ({
+                              value: item,
+                              label: stampPosLabel(item),
+                            }))}
+                          />
                         </label>
                       </>
                     ) : null}

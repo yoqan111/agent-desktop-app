@@ -56,19 +56,21 @@ yarn start
 
 ## Playwright Studio
 
-独立工作区，用于录制浏览器操作路径、管理脚本并回放。
+独立工作区，用于录制浏览器流程、管理登录态与产物，并支持批量回放与 Agent 分析。
 
 - Codegen 录制，生成 Playwright 测试脚本
 - 支持 Chromium / 本机 Chrome / Edge / Firefox / WebKit
-- 回放模式：有头 / 无头 / UI / Debug
+- 回放模式：有头 / 无头 / UI / Debug；可记住浏览器与放慢设置
 - **复用持久登录目录**：Studio 专用 `user-data-dir`，同浏览器下次录制可免登
-- **保存 / 加载登录态**：`storageState`，供无痕回放带 Cookie
+- **保存 / 加载登录态**：`storageState`，供无痕回放与登录前置复用 Cookie
+- **登录前置工作流**：业务流回放前可自动先跑登录流并刷新 `storageState`（缺少登录态时 / 每次 / 关闭）
 - 「安装浏览器」会同时补齐 Playwright 自带的 `ffmpeg`（失败视频依赖）
-- **产物面板**：失败回放保留 Trace / 截图 / 视频，可一键打开 Trace Viewer
+- **产物面板**：失败回放保留 Trace / 截图 / 视频，可一键打开 Trace Viewer；Agent 回复可识别本地产物并打开
 - **断言助手**：一键向脚本插入 `expect` 模板（URL / Title / Body）
 - **页面采集**：对起始 URL 截图或导出 PDF，归档到产物目录
-- **批量回放**：勾选多条工作流顺序执行
+- **批量回放**：勾选多条工作流顺序执行（沿用各流登录前置）
 - **简易定时**：按间隔分钟自动批量回放（应用保持运行时生效）
+- **Agent 分析**：支持 Cursor SDK 与 OpenAI 兼容 API；可「导出 PDF 并分析」或仅基于脚本 / 产物分析；会话与模型选择会本机记忆
 
 ## Agent / MCP
 

@@ -16,7 +16,12 @@ interface JsonRpcRequest {
 }
 
 let server: Server | undefined;
+let mcpUrl: string | null = null;
 const sseClients = new Set<ServerResponse>();
+
+export function getMcpServerUrl(): string | null {
+  return mcpUrl;
+}
 
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -273,6 +278,7 @@ export async function startMcpServer(): Promise<string> {
     try {
       server = await listen(port);
       const url = `http://127.0.0.1:${port}/mcp`;
+      mcpUrl = url;
       const descriptor = path.join(app.getPath('userData'), 'mcp.json');
       writeFileSync(descriptor, JSON.stringify({
         url,

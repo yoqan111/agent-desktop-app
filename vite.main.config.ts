@@ -10,6 +10,7 @@ export default defineConfig({
       external: [
         'ffmpeg-static',
         'ffprobe-static',
+        '@cursor/sdk',
       ],
     },
   },
