@@ -3,6 +3,38 @@ export interface LocalArtifactRef {
   name: string;
 }
 
+/** In-app preview kinds supported by LocalArtifactPreview. */
+export type LocalArtifactPreviewKind = 'image' | 'video' | 'markdown' | 'text';
+
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg']);
+const VIDEO_EXTS = new Set(['mp4', 'webm', 'mov', 'mkv']);
+const MARKDOWN_EXTS = new Set(['md', 'markdown']);
+const TEXT_EXTS = new Set(['txt', 'log', 'csv']);
+
+function fileExtension(filePath: string): string {
+  const base = basename(filePath);
+  const dot = base.lastIndexOf('.');
+  if (dot < 0) return '';
+  return base.slice(dot + 1).toLowerCase();
+}
+
+/** Return preview kind when the file can be shown inside MediaDo; otherwise null. */
+export function getLocalArtifactPreviewKind(filePath: string): LocalArtifactPreviewKind | null {
+  const ext = fileExtension(filePath);
+  if (IMAGE_EXTS.has(ext)) return 'image';
+  if (VIDEO_EXTS.has(ext)) return 'video';
+  if (MARKDOWN_EXTS.has(ext)) return 'markdown';
+  if (TEXT_EXTS.has(ext)) return 'text';
+  return null;
+}
+
+export function localArtifactPreviewLabel(kind: LocalArtifactPreviewKind): string {
+  if (kind === 'image') return '图片';
+  if (kind === 'video') return '视频';
+  if (kind === 'markdown') return 'Markdown';
+  return '文本';
+}
+
 const FILE_EXT = String.raw`pdf|png|jpe?g|webp|gif|svg|webm|mp4|mov|mkv|wav|mp3|aac|flac|ogg|json|zip|har|md|txt|csv|html?|tsx?|jsx?|trace|log|xml|yaml|yml|docx?|xlsx?|pptx?`;
 
 /** Keys commonly used by mediado / Playwright / MCP tool payloads. */

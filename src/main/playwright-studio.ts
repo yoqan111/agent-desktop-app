@@ -12,7 +12,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { app, shell } from 'electron';
 
 const requireFromMain = createRequire(__filename);
@@ -23,6 +23,8 @@ import type {
   PlaywrightAssertRequest,
   PlaywrightAssertTemplate,
   PlaywrightAuthBeforePlay,
+  PlaywrightBaselineCompareResult,
+  PlaywrightBaselineInfo,
   PlaywrightBatchPlayRequest,
   PlaywrightBrowser,
   PlaywrightCaptureRequest,
@@ -31,6 +33,8 @@ import type {
   PlaywrightRecordRequest,
   PlaywrightRunEvent,
   PlaywrightRunMode,
+  PlaywrightSaveBaselineRequest,
+  PlaywrightSaveReportRequest,
   PlaywrightScheduleConfig,
   PlaywrightStudioStatus,
   PlaywrightUpdateRequest,
@@ -211,6 +215,58 @@ function injectStorageSave(script: string, outPath: string): string {
     return `${script.slice(0, closeIdx)}${block}${script.slice(closeIdx)}`;
   }
   return `${script.trimEnd()}\n${block}\n`;
+}
+
+/** Enable HAR capture for a temp play script via Playwright test.use contextOptions. */
+function injectHarRecording(script: string, harPath: string): string {
+  const marker = '// --- Studio HAR ---';
+  if (script.includes(marker)) {
+    return script;
+  }
+  const block = `${marker}
+test.use({
+  contextOptions: {
+    recordHar: { path: ${JSON.stringify(harPath)}, mode: 'minimal' },
+  },
+});
+`;
+  const importRe = /import\s*\{[^}]*\}\s*from\s*['"]@playwright\/test['"]\s*;?/;
+  const match = script.match(importRe);
+  if (match && typeof match.index === 'number') {
+    const insertAt = match.index + match[0].length;
+    return `${script.slice(0, insertAt)}\n${block}${script.slice(insertAt)}`;
+  }
+  return `import { test, expect } from '@playwright/test';\n${block}${script}`;
+}
+
+function scriptHashFor(workflowId: string): string {
+  try {
+    const meta = readMeta(workflowId);
+    const scriptFile = scriptPathFor(meta);
+    if (!existsSync(scriptFile)) return '';
+    return createHash('sha1').update(readFileSync(scriptFile)).digest('hex').slice(0, 16);
+  } catch {
+    return '';
+  }
+}
+
+function baselineDir(workflowId: string): string {
+  return path.join(workflowDir(workflowId), 'baseline');
+}
+
+function baselineMetaPath(workflowId: string): string {
+  return path.join(baselineDir(workflowId), 'baseline.json');
+}
+
+function readLogExcerpt(runId: string, maxChars = 2500): string {
+  const logFile = path.join(studioRoot(), 'runs', `${runId}.log`);
+  if (!existsSync(logFile)) return '';
+  try {
+    const text = readFileSync(logFile, 'utf8');
+    return text.length > maxChars ? text.slice(-maxChars) : text;
+  } catch {
+    return '';
+  }
 }
 
 /** Export cookies/localStorage from Studio persistent profile into a storageState JSON. */
@@ -729,6 +785,9 @@ function classifyArtifact(filePath: string): PlaywrightArtifactKind | null {
   if (/\.(webm|mp4|mkv)$/i.test(base)) return 'video';
   if (/\.(png|jpe?g|webp)$/i.test(base)) return 'screenshot';
   if (base.endsWith('.pdf')) return 'pdf';
+  if (base.endsWith('.har')) return 'har';
+  if (base.endsWith('.md') || base.startsWith('report-') || base.includes('.report.')) return 'report';
+  if (base === 'baseline.json' || base.startsWith('baseline-')) return 'baseline';
   return null;
 }
 
@@ -773,7 +832,10 @@ function collectArtifacts(workflowId: string, runId: string): PlaywrightArtifact
     video: 1,
     screenshot: 2,
     pdf: 3,
-    other: 4,
+    har: 4,
+    report: 5,
+    baseline: 6,
+    other: 7,
   };
   return list.sort((a, b) => {
     const byKind = rank[a.kind] - rank[b.kind];
@@ -1263,15 +1325,26 @@ export async function playWorkflow(
   const authFile = (await ensureAuthFileForPlay(meta)) || authPathFor(meta.id);
   const runId = randomUUID();
   const outputDir = artifactRunDir(meta.id, runId);
+  mkdirSync(outputDir, { recursive: true });
   // Default: refresh storageState after successful play so the next run keeps cookies.
   const saveStorageTo = (request.saveStorageTo || '').trim()
     || (request.saveAuthAfterPlay === false ? '' : authPathFor(meta.id));
+  const recordHar = request.recordHar === true;
+  const saveBaselineAfterPass = request.saveBaseline === true;
+  const harPath = recordHar ? path.join(outputDir, 'network.har') : '';
   let tempScriptPath: string | null = null;
   let testFilterOverride: string | null = null;
-  if (saveStorageTo) {
-    mkdirSync(path.dirname(saveStorageTo), { recursive: true });
-    const original = readFileSync(scriptFile, 'utf8');
-    const patched = injectStorageSave(original, saveStorageTo);
+  if (saveStorageTo || recordHar) {
+    if (saveStorageTo) {
+      mkdirSync(path.dirname(saveStorageTo), { recursive: true });
+    }
+    let patched = readFileSync(scriptFile, 'utf8');
+    if (recordHar) {
+      patched = injectHarRecording(patched, harPath);
+    }
+    if (saveStorageTo) {
+      patched = injectStorageSave(patched, saveStorageTo);
+    }
     tempScriptPath = path.join(workflowDir(meta.id), `__studio_save_${runId}.spec.ts`);
     writeFileSync(tempScriptPath, patched.endsWith('\n') ? patched : `${patched}\n`, 'utf8');
     testFilterOverride = `__studio_save_${runId}`;
@@ -1303,12 +1376,15 @@ export async function playWorkflow(
   }
 
   const logFile = path.join(root, 'runs', `${runId}.log`);
-  const runtimeNote = ensured.videoEnabled
-    ? 'screenshot=off · video=retain-on-failure · trace=retain-on-failure'
-    : 'screenshot=off · video=off (ffmpeg missing) · trace=retain-on-failure';
+  const runtimeNote = [
+    'screenshot=off',
+    ensured.videoEnabled ? 'video=retain-on-failure' : 'video=off (ffmpeg missing)',
+    'trace=retain-on-failure',
+    recordHar ? 'har=on' : 'har=off',
+  ].join(' · ');
   writeFileSync(
     logFile,
-    `# play ${meta.id}\nbrowser=${meta.browser}\nscript=${scriptFile}\nfilter=${effectiveFilter}\noutput=${outputDir}\nauth=${existsSync(authFile) ? authFile : '-'}\nsaveStorage=${saveStorageTo || '-'}\n${runtimeNote}\n$ ${command} ${args.join(' ')}\n\n`,
+    `# play ${meta.id}\nbrowser=${meta.browser}\nscript=${scriptFile}\nfilter=${effectiveFilter}\noutput=${outputDir}\nauth=${existsSync(authFile) ? authFile : '-'}\nsaveStorage=${saveStorageTo || '-'}\nsaveBaseline=${saveBaselineAfterPass}\n${runtimeNote}\n$ ${command} ${args.join(' ')}\n\n`,
     'utf8',
   );
   if (!ensured.videoEnabled && ensured.message) {
@@ -1348,6 +1424,8 @@ export async function playWorkflow(
       `开始回放 · ${mode}`,
       existsSync(authFile) ? '已加载登录态' : null,
       saveStorageTo ? '结束后将刷新登录态' : null,
+      recordHar ? '将录制 HAR' : null,
+      saveBaselineAfterPass ? '通过后设为基线' : null,
       ensured.videoEnabled ? null : '未检测到 ffmpeg，已关闭失败视频',
     ].filter(Boolean).join(' · '),
   });
@@ -1380,12 +1458,11 @@ export async function playWorkflow(
         // ignore
       }
     }
-    const artifacts = collectArtifacts(meta.id, runId);
+    let artifacts = collectArtifacts(meta.id, runId);
     const current = readMeta(meta.id);
     current.updatedAt = nowIso();
     current.lastRunAt = nowIso();
     current.lastRunId = runId;
-    current.lastArtifactCount = artifacts.length;
     if (code === 0) {
       if (saveStorageTo && existsSync(saveStorageTo)) {
         current.hasAuth = true;
@@ -1403,24 +1480,41 @@ export async function playWorkflow(
           // ignore cross-meta update failures
         }
       }
-      current.lastRunStatus = 'passed';
-      current.lastRunMessage = saveStorageTo && existsSync(saveStorageTo)
+      if (saveBaselineAfterPass) {
+        try {
+          saveBaseline({ workflowId: meta.id, runId });
+          artifacts = collectArtifacts(meta.id, runId);
+        } catch {
+          // baseline save should not fail the play result
+        }
+      }
+      const refreshed = readMeta(meta.id);
+      refreshed.updatedAt = nowIso();
+      refreshed.lastRunAt = nowIso();
+      refreshed.lastRunId = runId;
+      refreshed.lastArtifactCount = artifacts.length;
+      refreshed.lastRunStatus = 'passed';
+      refreshed.lastRunMessage = saveStorageTo && existsSync(saveStorageTo)
         ? '回放通过（已刷新登录态）'
         : artifacts.length
           ? `回放通过（${artifacts.length} 个产物）`
           : '回放通过';
-      writeMeta(current);
+      if (saveBaselineAfterPass) {
+        refreshed.lastRunMessage = `${refreshed.lastRunMessage} · 已更新基线`;
+      }
+      writeMeta(refreshed);
       emit({
         workflowId: meta.id,
         runId,
         phase: 'passed',
         percent: 100,
-        message: current.lastRunMessage,
+        message: refreshed.lastRunMessage,
         exitCode: code,
         artifacts,
       });
     } else {
       const hasTrace = artifacts.some((item) => item.kind === 'trace');
+      current.lastArtifactCount = artifacts.length;
       current.lastRunStatus = 'failed';
       current.lastRunMessage = hasTrace
         ? `回放失败（退出码 ${code}）。已生成 Trace，可在产物面板打开。`
@@ -1702,6 +1796,155 @@ export function injectAsserts(request: PlaywrightAssertRequest): PlaywrightWorkf
   meta.lastRunMessage = '已插入断言模板';
   writeMeta(meta);
   return getWorkflow(meta.id);
+}
+
+export function getBaseline(workflowId: string): PlaywrightBaselineInfo | null {
+  readMeta(workflowId);
+  const file = baselineMetaPath(workflowId);
+  if (!existsSync(file)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as PlaywrightBaselineInfo;
+    return { ...raw, path: file };
+  } catch {
+    return null;
+  }
+}
+
+export function saveBaseline(request: PlaywrightSaveBaselineRequest): PlaywrightBaselineInfo {
+  const meta = readMeta(request.workflowId);
+  const runId = (request.runId || meta.lastRunId || '').trim();
+  if (!runId) {
+    throw new Error('没有可设为基线的回放记录，请先成功回放一次。');
+  }
+  const runArtifacts = collectArtifacts(meta.id, runId).filter((item) => item.kind !== 'baseline');
+  const dir = baselineDir(meta.id);
+  mkdirSync(dir, { recursive: true });
+  // Refresh snapshot copies under baseline/files for offline compare.
+  const filesDir = path.join(dir, 'files');
+  rmSync(filesDir, { recursive: true, force: true });
+  mkdirSync(filesDir, { recursive: true });
+  for (const item of runArtifacts.slice(0, 20)) {
+    try {
+      const target = path.join(filesDir, item.name);
+      writeFileSync(target, readFileSync(item.path));
+    } catch {
+      // skip unreadable artifact
+    }
+  }
+  const info: PlaywrightBaselineInfo = {
+    workflowId: meta.id,
+    runId,
+    savedAt: nowIso(),
+    phase: meta.lastRunStatus || 'passed',
+    message: meta.lastRunMessage || '',
+    scriptHash: scriptHashFor(meta.id),
+    artifactNames: runArtifacts.map((item) => item.name),
+    logExcerpt: readLogExcerpt(runId),
+    path: baselineMetaPath(meta.id),
+  };
+  writeFileSync(info.path, `${JSON.stringify(info, null, 2)}\n`, 'utf8');
+  // Also drop a pointer artifact into the run folder for the UI list.
+  try {
+    const pointer = path.join(artifactRunDir(meta.id, runId), 'baseline.json');
+    writeFileSync(pointer, `${JSON.stringify(info, null, 2)}\n`, 'utf8');
+  } catch {
+    // ignore
+  }
+  meta.baselineRunId = runId;
+  meta.baselineSavedAt = info.savedAt;
+  meta.updatedAt = nowIso();
+  meta.lastRunMessage = `已保存回放基线（${runId.slice(0, 8)}…）`;
+  writeMeta(meta);
+  return info;
+}
+
+export function compareBaseline(workflowId: string): PlaywrightBaselineCompareResult {
+  const meta = readMeta(workflowId);
+  const baseline = getBaseline(workflowId);
+  const latestRunId = meta.lastRunId || null;
+  const latestArtifacts = latestRunId ? collectArtifacts(workflowId, latestRunId) : [];
+  const baselineArtifacts = baseline
+    ? collectArtifacts(workflowId, baseline.runId)
+    : [];
+  const currentHash = scriptHashFor(workflowId);
+  const scriptChanged = Boolean(baseline && baseline.scriptHash && baseline.scriptHash !== currentHash);
+  const lines: string[] = [];
+  if (!baseline) {
+    lines.push('尚未设置基线。建议先成功回放一次，再点击「设为基线」。');
+  } else {
+    lines.push(`基线 run=${baseline.runId.slice(0, 8)}… · ${baseline.savedAt}`);
+    lines.push(`基线状态：${baseline.phase} · ${baseline.message || '-'}`);
+    lines.push(`基线产物：${baseline.artifactNames.join(', ') || '无'}`);
+    if (latestRunId) {
+      lines.push(`最近 run=${latestRunId.slice(0, 8)}… · ${meta.lastRunStatus || 'idle'} · ${meta.lastRunMessage || '-'}`);
+      lines.push(`最近产物：${latestArtifacts.map((item) => `${item.kind}:${item.name}`).join(' · ') || '无'}`);
+      if (baseline.runId === latestRunId) {
+        lines.push('最近一次回放与基线为同一 run。');
+      } else if (meta.lastRunStatus === 'failed') {
+        lines.push('最近回放失败，相对基线可能存在回归，请结合 Trace / HAR / 日志分析。');
+      } else if (meta.lastRunStatus === 'passed') {
+        lines.push('最近回放通过；可对比产物与脚本哈希确认是否漂移。');
+      }
+    } else {
+      lines.push('尚无最近回放记录。');
+    }
+    if (scriptChanged) {
+      lines.push('脚本内容相对基线已变化，断言/选择器可能需要重新评估。');
+    }
+  }
+  return {
+    workflowId,
+    hasBaseline: Boolean(baseline),
+    baseline,
+    latestRunId,
+    latestPhase: meta.lastRunStatus || null,
+    latestMessage: meta.lastRunMessage || null,
+    scriptChanged,
+    latestArtifacts,
+    baselineArtifacts,
+    summary: lines.join('\n'),
+  };
+}
+
+export function saveReport(request: PlaywrightSaveReportRequest): PlaywrightArtifact {
+  const meta = readMeta(request.workflowId);
+  const content = (request.content || '').trim();
+  if (!content) {
+    throw new Error('报告内容不能为空。');
+  }
+  const kind = request.kind || 'general';
+  const title = (request.title || kind).trim().replace(/[^\w\u4e00-\u9fff\-]+/g, '_').slice(0, 40) || kind;
+  const runId = `report-${Date.now()}`;
+  const dir = artifactRunDir(meta.id, runId);
+  mkdirSync(dir, { recursive: true });
+  const fileName = `report-${kind}-${title}.md`;
+  const filePath = path.join(dir, fileName);
+  const body = [
+    `# ${request.title || kind}`,
+    '',
+    `> workflow: ${meta.name} (${meta.id})`,
+    `> url: ${meta.url}`,
+    `> generatedAt: ${nowIso()}`,
+    `> kind: ${kind}`,
+    '',
+    content,
+    '',
+  ].join('\n');
+  writeFileSync(filePath, body, 'utf8');
+  const st = statSync(filePath);
+  meta.updatedAt = nowIso();
+  meta.lastRunMessage = `已保存分析报告：${fileName}`;
+  meta.lastArtifactCount = listArtifacts(meta.id).length;
+  writeMeta(meta);
+  return {
+    kind: 'report',
+    name: fileName,
+    path: filePath,
+    size: st.size,
+    mtime: st.mtime.toISOString(),
+    workflowId: meta.id,
+    runId,
+  };
 }
 
 async function openCapturePage(meta: PlaywrightWorkflowMeta): Promise<{

@@ -4,7 +4,70 @@ export type PlaywrightRunMode = 'headed' | 'headless' | 'ui' | 'debug';
 
 export type PlaywrightJobPhase = 'idle' | 'recording' | 'running' | 'passed' | 'failed' | 'stopped';
 
-export type PlaywrightArtifactKind = 'trace' | 'video' | 'screenshot' | 'pdf' | 'other';
+export type PlaywrightArtifactKind =
+  | 'trace'
+  | 'video'
+  | 'screenshot'
+  | 'pdf'
+  | 'har'
+  | 'report'
+  | 'baseline'
+  | 'other';
+
+/** Agent / Studio analysis focus for a workflow. */
+export type PlaywrightAnalyzeMode =
+  | 'general'
+  | 'test-enhance'
+  | 'business-doc'
+  | 'anomaly';
+
+export const PLAYWRIGHT_ANALYZE_MODES: PlaywrightAnalyzeMode[] = [
+  'general',
+  'test-enhance',
+  'business-doc',
+  'anomaly',
+];
+
+export interface PlaywrightBaselineInfo {
+  workflowId: string;
+  runId: string;
+  savedAt: string;
+  phase: PlaywrightJobPhase;
+  message: string;
+  scriptHash: string;
+  artifactNames: string[];
+  logExcerpt?: string;
+  path: string;
+}
+
+export interface PlaywrightBaselineCompareResult {
+  workflowId: string;
+  hasBaseline: boolean;
+  baseline: PlaywrightBaselineInfo | null;
+  latestRunId: string | null;
+  latestPhase: PlaywrightJobPhase | null;
+  latestMessage: string | null;
+  scriptChanged: boolean;
+  latestArtifacts: PlaywrightArtifact[];
+  baselineArtifacts: PlaywrightArtifact[];
+  summary: string;
+}
+
+export interface PlaywrightSaveReportRequest {
+  workflowId: string;
+  /** Markdown / text body. */
+  content: string;
+  /** Short title used in filename. */
+  title?: string;
+  /** Report flavor for naming. */
+  kind?: 'test-enhance' | 'business-doc' | 'anomaly' | 'general';
+}
+
+export interface PlaywrightSaveBaselineRequest {
+  workflowId: string;
+  /** Prefer this run; default last successful / last run. */
+  runId?: string;
+}
 
 export type PlaywrightAssertTemplate = 'url' | 'title' | 'body' | 'all';
 
@@ -67,6 +130,10 @@ export interface PlaywrightWorkflowMeta {
   /** Count of artifacts from the latest play/capture run. */
   lastArtifactCount?: number;
   notes?: string;
+  /** Run id promoted as regression baseline. */
+  baselineRunId?: string;
+  /** ISO time when baseline was saved. */
+  baselineSavedAt?: string;
 }
 
 export interface PlaywrightWorkflowDetail extends PlaywrightWorkflowMeta {
@@ -116,6 +183,10 @@ export interface PlaywrightPlayRequest {
    * Pass false to skip.
    */
   saveAuthAfterPlay?: boolean;
+  /** Record network HAR into this run's artifact folder. */
+  recordHar?: boolean;
+  /** After a successful play, promote this run as the workflow baseline. */
+  saveBaseline?: boolean;
 }
 
 export interface PlaywrightBatchPlayRequest {
@@ -218,6 +289,10 @@ export interface PlaywrightApi {
     artifacts: PlaywrightArtifact[];
     workflow: PlaywrightWorkflowDetail;
   }>;
+  saveBaseline(request: PlaywrightSaveBaselineRequest): Promise<PlaywrightBaselineInfo>;
+  getBaseline(workflowId: string): Promise<PlaywrightBaselineInfo | null>;
+  compareBaseline(workflowId: string): Promise<PlaywrightBaselineCompareResult>;
+  saveReport(request: PlaywrightSaveReportRequest): Promise<PlaywrightArtifact>;
   getSchedule(): Promise<PlaywrightScheduleConfig>;
   setSchedule(config: Partial<PlaywrightScheduleConfig>): Promise<PlaywrightScheduleConfig>;
   onRunEvent(handler: (event: PlaywrightRunEvent) => void): () => void;
@@ -243,6 +318,10 @@ export const PlaywrightIpc = {
   deleteArtifact: 'pw:deleteArtifact',
   injectAsserts: 'pw:injectAsserts',
   capturePage: 'pw:capturePage',
+  saveBaseline: 'pw:saveBaseline',
+  getBaseline: 'pw:getBaseline',
+  compareBaseline: 'pw:compareBaseline',
+  saveReport: 'pw:saveReport',
   getSchedule: 'pw:getSchedule',
   setSchedule: 'pw:setSchedule',
   event: 'pw:event',

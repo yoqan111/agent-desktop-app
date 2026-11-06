@@ -22,9 +22,11 @@ import { assertAgentPath, grantInput } from './access';
 import { askUserConfirm } from './confirm';
 import {
   capturePage,
+  compareBaseline,
   createWorkflowFromScript,
   deleteArtifact,
   deleteWorkflow,
+  getBaseline,
   getSchedule,
   getStudioStatus,
   getWorkflow,
@@ -36,6 +38,8 @@ import {
   playBatch,
   playWorkflow,
   revealArtifact,
+  saveBaseline,
+  saveReport,
   setSchedule,
   startRecord,
   stopJob,
@@ -952,6 +956,14 @@ const tools: ToolDefinition[] = [
           type: 'boolean',
           description: '回放成功后把 storageState 写回本工作流（用于刷新登录态）。',
         },
+        recordHar: {
+          type: 'boolean',
+          description: '回放时录制 network HAR 到产物目录。',
+        },
+        saveBaseline: {
+          type: 'boolean',
+          description: '回放成功后把本次 run 设为回归基线。',
+        },
         wait: { type: 'boolean', description: '是否等待结束。Agent 默认 true。' },
       },
       required: ['id'],
@@ -967,6 +979,8 @@ const tools: ToolDefinition[] = [
         slowMoMs: optionalNumber(obj, 'slowMoMs'),
         skipAuthPrecondition: optionalBoolean(obj, 'skipAuthPrecondition'),
         saveAuthAfterPlay: optionalBoolean(obj, 'saveAuthAfterPlay'),
+        recordHar: optionalBoolean(obj, 'recordHar'),
+        saveBaseline: optionalBoolean(obj, 'saveBaseline'),
       }, {
         wait: wait ?? ctx.source === 'agent',
       });
@@ -1218,6 +1232,92 @@ const tools: ToolDefinition[] = [
         workflowIds,
         mode: oneOf(optionalString(obj, 'mode'), PLAYWRIGHT_RUN_MODES, '回放模式') as PlaywrightRunMode | undefined,
         slowMoMs: optionalNumber(obj, 'slowMoMs'),
+      });
+    },
+  },
+  {
+    name: 'playwright_save_baseline',
+    description: '将某次回放 run 设为回归基线（默认最近一次）。用于后续异常对比。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflowId: { type: 'string' },
+        runId: { type: 'string', description: '可选；省略则用最近一次回放。' },
+      },
+      required: ['workflowId'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      return saveBaseline({
+        workflowId: requiredString(obj, 'workflowId'),
+        runId: optionalString(obj, 'runId'),
+      });
+    },
+  },
+  {
+    name: 'playwright_get_baseline',
+    description: '读取工作流当前回归基线信息。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflowId: { type: 'string' },
+      },
+      required: ['workflowId'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      return getBaseline(requiredString(obj, 'workflowId'));
+    },
+  },
+  {
+    name: 'playwright_compare_baseline',
+    description: '对比工作流基线与最近回放（脚本哈希、产物、状态），返回可读摘要。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflowId: { type: 'string' },
+      },
+      required: ['workflowId'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      return compareBaseline(requiredString(obj, 'workflowId'));
+    },
+  },
+  {
+    name: 'playwright_save_report',
+    description: '将 Agent 分析报告保存为工作流产物 Markdown（test-enhance / business-doc / anomaly / general）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflowId: { type: 'string' },
+        content: { type: 'string', description: 'Markdown 正文。' },
+        title: { type: 'string' },
+        kind: {
+          type: 'string',
+          enum: ['test-enhance', 'business-doc', 'anomaly', 'general'],
+        },
+      },
+      required: ['workflowId', 'content'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      const kindRaw = optionalString(obj, 'kind');
+      const kind = kindRaw === 'test-enhance'
+        || kindRaw === 'business-doc'
+        || kindRaw === 'anomaly'
+        || kindRaw === 'general'
+        ? kindRaw
+        : undefined;
+      return saveReport({
+        workflowId: requiredString(obj, 'workflowId'),
+        content: requiredString(obj, 'content'),
+        title: optionalString(obj, 'title'),
+        kind,
       });
     },
   },

@@ -10,6 +10,7 @@ import {
   type ReactElement,
 } from 'react';
 import type {
+  AgentAnalyzeMode,
   AgentBridgeStatus,
   AgentChatMessage,
   AgentChatSessionSummary,
@@ -22,11 +23,20 @@ import {
   DEFAULT_OPENAI_BASE_URL,
   agentModelKey,
 } from '../../shared/agent';
-import { extractLocalArtifacts } from '../../shared/local-artifacts';
-import type { PlaywrightWorkflowMeta } from '../../shared/playwright';
+import {
+  extractLocalArtifacts,
+  getLocalArtifactPreviewKind,
+  localArtifactPreviewLabel,
+  type LocalArtifactRef,
+} from '../../shared/local-artifacts';
+import {
+  PLAYWRIGHT_ANALYZE_MODES,
+  type PlaywrightWorkflowMeta,
+} from '../../shared/playwright';
 import { askConfirm } from '../confirm';
 import { AgentMarkdown } from './AgentMarkdown';
 import { FloatingNotice } from './FloatingNotice';
+import { LocalArtifactPreview } from './LocalArtifactPreview';
 import { PwSelect } from './PwSelect';
 import { ResizeHandle } from './ResizeHandle';
 
@@ -51,11 +61,22 @@ interface AgentChatPanelProps {
   workflowName?: string;
   autoStart?: boolean;
   capturePdf?: boolean;
+  /** Analysis focus for analyzeWorkflow / toolbar actions. */
+  analyzeMode?: AgentAnalyzeMode;
   /** Optional note appended to the first auto-started analysis. */
   analyzeNote?: string;
   /** When auto-starting, create a brand-new chat session instead of reusing the active one. */
   forceNewSession?: boolean;
   onBusyChange?: (busy: boolean) => void;
+  /** Fired once after auto-start is consumed so the parent can clear autoStart. */
+  onAutoStarted?: () => void;
+}
+
+function analyzeModeLabel(mode: AgentAnalyzeMode): string {
+  if (mode === 'test-enhance') return '智能测试增强';
+  if (mode === 'business-doc') return '业务理解与文档';
+  if (mode === 'anomaly') return '基线异常分析';
+  return '综合分析';
 }
 
 function modelValue(model: AgentModelInfo): string {
@@ -117,6 +138,26 @@ function IconTrash(): ReactElement {
       <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
       <path d="M7 7l1 12a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-12" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
       <path d="M10 11v6M14 11v6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconJumpDown(): ReactElement {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="M12 5v12"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M6.5 12.5 12 18l5.5-5.5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -201,9 +242,11 @@ export function AgentChatPanel({
   workflowName,
   autoStart = false,
   capturePdf = true,
+  analyzeMode = 'test-enhance',
   analyzeNote = '',
   forceNewSession = false,
   onBusyChange,
+  onAutoStarted,
 }: AgentChatPanelProps): ReactElement {
   const [status, setStatus] = useState<AgentBridgeStatus | null>(null);
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
@@ -230,6 +273,7 @@ export function AgentChatPanel({
   const [expandedActivityIds, setExpandedActivityIds] = useState<Set<string>>(() => new Set());
   /** Local artifact fold ids expanded (default collapsed). */
   const [expandedArtifactIds, setExpandedArtifactIds] = useState<Set<string>>(() => new Set());
+  const [previewArtifact, setPreviewArtifact] = useState<LocalArtifactRef | null>(null);
   const [workflows, setWorkflows] = useState<PlaywrightWorkflowMeta[]>([]);
   const [mentionedWorkflow, setMentionedWorkflow] = useState<MentionedWorkflow | null>(
     () => (workflowId ? { id: workflowId, name: workflowName || workflowId } : null),
@@ -238,13 +282,29 @@ export function AgentChatPanel({
   const [mentionQuery, setMentionQuery] = useState('');
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionStart, setMentionStart] = useState<number | null>(null);
+  const [panelAnalyzeMode, setPanelAnalyzeMode] = useState<AgentAnalyzeMode>(analyzeMode);
   const listRef = useRef<HTMLDivElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLFormElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const autoStartedRef = useRef(false);
+  const startAnalyzeRef = useRef<(
+    withPdf?: boolean,
+    note?: string,
+    options?: {
+      freshSession?: boolean;
+      workflow?: MentionedWorkflow | null;
+      mode?: AgentAnalyzeMode;
+    },
+  ) => Promise<void>>(async () => undefined);
+  const onAutoStartedRef = useRef(onAutoStarted);
   const activeSessionIdRef = useRef<string | null>(null);
   const stickToBottomRef = useRef(true);
+
+  useEffect(() => {
+    onAutoStartedRef.current = onAutoStarted;
+  }, [onAutoStarted]);
+  const [atBottom, setAtBottom] = useState(true);
 
   useEffect(() => {
     activeSessionIdRef.current = activeSessionId;
@@ -257,6 +317,10 @@ export function AgentChatPanel({
     }
     setMentionedWorkflow(null);
   }, [workflowId, workflowName]);
+
+  useEffect(() => {
+    setPanelAnalyzeMode(analyzeMode);
+  }, [analyzeMode]);
 
   useEffect(() => {
     if (!window.playwright?.listWorkflows) return;
@@ -493,7 +557,9 @@ export function AgentChatPanel({
     if (!node) return undefined;
     const onScroll = () => {
       const gap = node.scrollHeight - node.scrollTop - node.clientHeight;
-      stickToBottomRef.current = gap < 96;
+      const nearBottom = gap < 96;
+      stickToBottomRef.current = nearBottom;
+      setAtBottom(nearBottom);
     };
     onScroll();
     node.addEventListener('scroll', onScroll, { passive: true });
@@ -504,7 +570,16 @@ export function AgentChatPanel({
     const node = listRef.current;
     if (!node || !stickToBottomRef.current) return;
     node.scrollTop = node.scrollHeight;
+    setAtBottom(true);
   }, [messages, busy, streamingId]);
+
+  function jumpToOutputBottom(): void {
+    const node = listRef.current;
+    stickToBottomRef.current = true;
+    setAtBottom(true);
+    if (!node) return;
+    node.scrollTo({ top: node.scrollHeight, behavior: 'smooth' });
+  }
 
   useEffect(() => {
     if (!modelOpen) return undefined;
@@ -642,12 +717,17 @@ export function AgentChatPanel({
   const startAnalyze = useCallback(async (
     withPdf = capturePdf,
     note = analyzeNote,
-    options?: { freshSession?: boolean; workflow?: MentionedWorkflow | null },
+    options?: {
+      freshSession?: boolean;
+      workflow?: MentionedWorkflow | null;
+      mode?: AgentAnalyzeMode;
+    },
   ) => {
     const target = options?.workflow || mentionedWorkflow || (
       workflowId ? { id: workflowId, name: workflowName || workflowId } : null
     );
     if (!target?.id || !window.agent) return;
+    const mode = options?.mode || panelAnalyzeMode;
     setError('');
     setBusy(true);
     try {
@@ -656,7 +736,7 @@ export function AgentChatPanel({
         const created = await window.agent.createSession({
           workflowId: target.id,
           workflowName: target.name,
-          title: target.name ? `分析 · ${target.name}` : undefined,
+          title: target.name ? `${analyzeModeLabel(mode)} · ${target.name}` : undefined,
         });
         chatSessionId = created.id;
         setActiveSessionId(created.id);
@@ -681,6 +761,7 @@ export function AgentChatPanel({
       await window.agent.analyzeWorkflow({
         workflowId: target.id,
         capturePdf: withPdf,
+        mode,
         note: note?.trim() || undefined,
         modelKey: selectedModelKey || status?.modelKey,
         modelId: status?.modelId,
@@ -696,6 +777,7 @@ export function AgentChatPanel({
     analyzeNote,
     capturePdf,
     mentionedWorkflow,
+    panelAnalyzeMode,
     scheduleRefreshSessions,
     selectedModelKey,
     status?.modelId,
@@ -705,24 +787,27 @@ export function AgentChatPanel({
     workflowName,
   ]);
 
-  useEffect(() => {
-    autoStartedRef.current = false;
-  }, [analyzeNote, autoStart, capturePdf, forceNewSession, workflowId]);
+  startAnalyzeRef.current = startAnalyze;
 
+  // Auto-start at most once per mount / autoStart rising edge.
+  // Do NOT depend on startAnalyze identity — it changes on every status tick and was
+  // spawning duplicate sessions (especially with forceNewSession).
   useEffect(() => {
-    if (!autoStart || !workflowId || autoStartedRef.current) return;
+    if (!autoStart) {
+      autoStartedRef.current = false;
+      return;
+    }
+    if (!workflowId || autoStartedRef.current) return;
     if (!status?.hasApiKey) return;
     autoStartedRef.current = true;
-    void startAnalyze(capturePdf, analyzeNote, { freshSession: forceNewSession });
-  }, [
-    analyzeNote,
-    autoStart,
-    capturePdf,
-    forceNewSession,
-    startAnalyze,
-    status?.hasApiKey,
-    workflowId,
-  ]);
+    onAutoStartedRef.current?.();
+    void startAnalyzeRef.current(capturePdf, analyzeNote, {
+      freshSession: forceNewSession,
+      mode: analyzeMode,
+    });
+    // capturePdf / analyzeNote / mode / forceNewSession are read once at the rising edge.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot auto-start
+  }, [autoStart, status?.hasApiKey, workflowId]);
 
   async function handleSaveProviderConfig(): Promise<void> {
     setError('');
@@ -909,7 +994,7 @@ export function AgentChatPanel({
     setError('');
 
     if (shouldAnalyze) {
-      await startAnalyze(false, text, { workflow: target });
+      await startAnalyze(false, text, { workflow: target, mode: panelAnalyzeMode });
       return;
     }
 
@@ -1357,16 +1442,17 @@ export function AgentChatPanel({
           ) : null}
         </header>
 
-        <div className="agent-chat-log" ref={listRef}>
-          {messages.length === 0 ? (
-            <div className="agent-empty">
-              <strong>把 Playwright 工作流交给 Agent 分析</strong>
-              <p>
-                在下方输入框输入 @ 选择一次录制，再填写 Prompt 发送即可开始分析；也可使用「导出 PDF 并分析」或「脚本 / 产物分析」。本地产物会出现在回复底部。
-              </p>
-            </div>
-          ) : (
-            renderBlocks.map((block) => {
+        <div className="agent-chat-shell">
+          <div className="agent-chat-log" ref={listRef}>
+            {messages.length === 0 ? (
+              <div className="agent-empty">
+                <strong>把 Playwright 工作流交给 Agent 分析</strong>
+                <p>
+                  在下方输入框输入 @ 选择一次录制，再填写 Prompt 发送即可开始分析；也可使用「导出 PDF 并分析」或「脚本 / 产物分析」。本地产物会出现在回复底部。
+                </p>
+              </div>
+            ) : (
+              renderBlocks.map((block) => {
               if (block.kind === 'pending-activity') {
                 const foldId = `activity-${block.id}`;
                 const running = busy && renderBlocks[renderBlocks.length - 1] === block;
@@ -1605,35 +1691,49 @@ export function AgentChatPanel({
                           </button>
                           {artifactsOpen ? (
                             <ul className="agent-artifacts-list">
-                              {artifacts.map((artifact) => (
-                                <li key={artifact.path}>
-                                  <button
-                                    type="button"
-                                    className="agent-artifact-open"
-                                    title={`打开 ${artifact.path}`}
-                                    onClick={() => {
-                                      void window.agent.openLocalPath(artifact.path).catch((err) => {
-                                        setError(err instanceof Error ? err.message : '打开文件失败');
-                                      });
-                                    }}
-                                  >
-                                    <strong>{artifact.name}</strong>
-                                    <span>{artifact.path}</span>
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="agent-artifact-reveal"
-                                    title="在文件管理器中显示"
-                                    onClick={() => {
-                                      void window.agent.revealLocalPath(artifact.path).catch((err) => {
-                                        setError(err instanceof Error ? err.message : '打开目录失败');
-                                      });
-                                    }}
-                                  >
-                                    目录
-                                  </button>
-                                </li>
-                              ))}
+                              {artifacts.map((artifact) => {
+                                const previewKind = getLocalArtifactPreviewKind(artifact.path);
+                                return (
+                                  <li key={artifact.path}>
+                                    <button
+                                      type="button"
+                                      className="agent-artifact-open"
+                                      title={previewKind ? `预览 ${artifact.path}` : `打开 ${artifact.path}`}
+                                      onClick={() => {
+                                        if (previewKind) {
+                                          setPreviewArtifact(artifact);
+                                          return;
+                                        }
+                                        void window.agent.openLocalPath(artifact.path).catch((err) => {
+                                          setError(err instanceof Error ? err.message : '打开文件失败');
+                                        });
+                                      }}
+                                    >
+                                      <strong>
+                                        {previewKind ? (
+                                          <span className="agent-artifact-kind">
+                                            {localArtifactPreviewLabel(previewKind)}
+                                          </span>
+                                        ) : null}
+                                        {artifact.name}
+                                      </strong>
+                                      <span>{artifact.path}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="agent-artifact-reveal"
+                                      title="在文件管理器中显示"
+                                      onClick={() => {
+                                        void window.agent.revealLocalPath(artifact.path).catch((err) => {
+                                          setError(err instanceof Error ? err.message : '打开目录失败');
+                                        });
+                                      }}
+                                    >
+                                      目录
+                                    </button>
+                                  </li>
+                                );
+                              })}
                             </ul>
                           ) : null}
                         </div>
@@ -1642,38 +1742,52 @@ export function AgentChatPanel({
                   ) : null}
                 </article>
               );
-            })
-          )}
+              })
+            )}
+          </div>
           {busy ? (
-            <div className="agent-typing" role="status" aria-live="polite">
-              <span className="agent-typing-pulse" aria-hidden />
-              <span className="agent-stream-dots" aria-hidden>
-                <i /><i /><i />
-              </span>
-              <strong>正在分析回答</strong>
-              <span>流式输出中</span>
-            </div>
+            <button
+              type="button"
+              className={`agent-jump-bottom${atBottom ? ' is-at-bottom' : ''}`}
+              onClick={jumpToOutputBottom}
+              title="跳到输出底部"
+              aria-label="跳到输出底部"
+            >
+              <IconJumpDown />
+            </button>
           ) : null}
         </div>
 
         <footer className="agent-dock">
           <div className="agent-actions-row">
+            <label className="agent-mode-field">
+              分析模式
+              <PwSelect
+                value={panelAnalyzeMode}
+                disabled={busy}
+                onChange={(value) => setPanelAnalyzeMode(value as AgentAnalyzeMode)}
+                options={PLAYWRIGHT_ANALYZE_MODES.map((mode) => ({
+                  value: mode,
+                  label: analyzeModeLabel(mode),
+                }))}
+              />
+            </label>
             <button
               type="button"
               className="btn-primary"
               disabled={busy || !effectiveWorkflowId || !status?.hasApiKey}
-              onClick={() => { void startAnalyze(true); }}
+              title="基于脚本 / 产物 / 基线按所选模式分析（不导出 PDF）"
+              onClick={() => { void startAnalyze(false, analyzeNote, { mode: panelAnalyzeMode }); }}
             >
-              {busy ? '分析中…' : '导出 PDF 并分析'}
+              {busy ? '分析中…' : analyzeModeLabel(panelAnalyzeMode)}
             </button>
             <button
               type="button"
-              className="btn-secondary"
+              className="btn-primary"
               disabled={busy || !effectiveWorkflowId || !status?.hasApiKey}
-              title="不打开浏览器、不导出 PDF，直接基于脚本 / URL / 已有产物分析"
-              onClick={() => { void startAnalyze(false); }}
+              onClick={() => { void startAnalyze(true, analyzeNote, { mode: panelAnalyzeMode }); }}
             >
-              脚本 / 产物分析
+              导出 PDF 并分析
             </button>
             <button type="button" className="btn-secondary" disabled={!busy} onClick={() => { void window.agent.cancel(); }}>
               停止
@@ -1838,6 +1952,23 @@ export function AgentChatPanel({
           </form>
         </footer>
       </div>
+
+      {previewArtifact ? (
+        <LocalArtifactPreview
+          artifact={previewArtifact}
+          onClose={() => setPreviewArtifact(null)}
+          onOpenExternal={(targetPath) => {
+            void window.agent.openLocalPath(targetPath).catch((err) => {
+              setError(err instanceof Error ? err.message : '打开文件失败');
+            });
+          }}
+          onReveal={(targetPath) => {
+            void window.agent.revealLocalPath(targetPath).catch((err) => {
+              setError(err instanceof Error ? err.message : '打开目录失败');
+            });
+          }}
+        />
+      ) : null}
 
       <FloatingNotice message={error} onClose={() => setError('')} />
     </section>

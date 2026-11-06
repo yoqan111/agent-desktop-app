@@ -37,6 +37,8 @@ import {
   capturePage,
   deleteWorkflow,
   ensureScheduleTimer,
+  compareBaseline,
+  getBaseline,
   getSchedule,
   getStudioStatus,
   getWorkflow,
@@ -52,6 +54,8 @@ import {
   playWorkflow,
   revealArtifact,
   revealStudioRoot,
+  saveBaseline,
+  saveReport,
   setPlaywrightEventSink,
   setSchedule,
   startRecord,
@@ -85,6 +89,8 @@ import type {
   PlaywrightCaptureRequest,
   PlaywrightPlayRequest,
   PlaywrightRecordRequest,
+  PlaywrightSaveBaselineRequest,
+  PlaywrightSaveReportRequest,
   PlaywrightScheduleConfig,
   PlaywrightUpdateRequest,
 } from './shared/playwright';
@@ -361,6 +367,20 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle(PlaywrightIpc.capturePage, (_event, payload: unknown) => {
     return capturePage(payload as PlaywrightCaptureRequest);
+  });
+  ipcMain.handle(PlaywrightIpc.saveBaseline, (_event, payload: unknown) => {
+    return saveBaseline(payload as PlaywrightSaveBaselineRequest);
+  });
+  ipcMain.handle(PlaywrightIpc.getBaseline, (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('工作流 ID 无效。');
+    return getBaseline(id);
+  });
+  ipcMain.handle(PlaywrightIpc.compareBaseline, (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('工作流 ID 无效。');
+    return compareBaseline(id);
+  });
+  ipcMain.handle(PlaywrightIpc.saveReport, (_event, payload: unknown) => {
+    return saveReport(payload as PlaywrightSaveReportRequest);
   });
   ipcMain.handle(PlaywrightIpc.getSchedule, () => getSchedule());
   ipcMain.handle(PlaywrightIpc.setSchedule, (_event, payload: unknown) => {

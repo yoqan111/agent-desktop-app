@@ -10,6 +10,7 @@ import {
   agentModelKey,
   mergeAgentModels,
   parseAgentModelKey,
+  type AgentAnalyzeMode,
   type AgentAnalyzeWorkflowRequest,
   type AgentBridgeStatus,
   type AgentChatMessage,
@@ -47,7 +48,12 @@ import {
 } from './agent-sessions';
 import { getMcpServerUrl } from './mcp-server';
 import { runOpenAICompatibleAgent } from './openai-agent';
-import { capturePage, getWorkflow, listArtifacts } from './playwright-studio';
+import {
+  capturePage,
+  compareBaseline,
+  getWorkflow,
+  listArtifacts,
+} from './playwright-studio';
 
 type ModelSelection = { id: string; params?: AgentModelParam[] };
 
@@ -1276,6 +1282,13 @@ async function runOpenAIPrompt(input: {
   emit({ type: 'done', phase, message: '分析完成', chatSessionId: input.chatId });
 }
 
+function analyzeModeLabel(mode: AgentAnalyzeMode): string {
+  if (mode === 'test-enhance') return '智能测试增强';
+  if (mode === 'business-doc') return '业务理解与文档';
+  if (mode === 'anomaly') return '基线异常 / 回归分析';
+  return '综合分析';
+}
+
 function buildAnalyzePrompt(input: {
   name: string;
   url: string;
@@ -1284,33 +1297,89 @@ function buildAnalyzePrompt(input: {
   pdfPath?: string;
   artifactSummary: string;
   note?: string;
+  mode?: AgentAnalyzeMode;
+  baselineSummary?: string;
+  workflowId: string;
 }): string {
+  const mode: AgentAnalyzeMode = input.mode || 'general';
+  const scriptLimit = mode === 'test-enhance' ? 8000 : 4000;
   const lines = [
     '你是 MediaDo Playwright Studio 的页面分析助手。',
-    '用户通过 Playwright 录制/打开页面，并导出了 PDF（或已有产物），请基于上下文分析。',
+    `当前分析模式：${analyzeModeLabel(mode)}（${mode}）`,
+    '用户通过 Playwright 录制/打开页面，并可能导出了 PDF / Trace / HAR / 基线产物，请基于上下文分析。',
     '',
+    `工作流 ID：${input.workflowId}`,
     `工作流名称：${input.name}`,
     `起始 URL：${input.url}`,
     `浏览器：${input.browser}`,
     input.pdfPath
       ? `PDF 绝对路径：${input.pdfPath}`
-      : '本次未提供 PDF：请主要依据脚本、起始 URL 与已有产物（截图/Trace/视频）分析。',
+      : '本次未提供 PDF：请主要依据脚本、起始 URL 与已有产物（截图/Trace/视频/HAR）分析。',
     `产物摘要：${input.artifactSummary || '无'}`,
     '',
     '脚本节选：',
     '```ts',
-    input.scriptExcerpt.slice(0, 4000),
+    input.scriptExcerpt.slice(0, scriptLimit),
     '```',
-    '',
-    '请输出：',
-    '1. 页面/流程概要（无 PDF 时根据脚本与 URL 推断）',
-    '2. 关键交互与可自动化断言建议（URL / Title / 关键元素）',
-    '3. 风险点或失败高发步骤',
-    '4. 后续可继续录制的操作建议',
-    '',
-    '可用 MCP 工具（mediado）：playwright_get、playwright_list_artifacts、playwright_capture 等。',
-    '优先基于已给脚本与路径分析；确有必要时再调用工具。不要默认再去导出 PDF，除非用户明确要求。',
   ];
+
+  if (input.baselineSummary?.trim()) {
+    lines.push('', '## 基线对比摘要', input.baselineSummary.trim());
+  }
+
+  if (mode === 'test-enhance') {
+    lines.push(
+      '',
+      '## 任务：智能测试增强',
+      '请完成：',
+      '1. 识别脆弱选择器（动态 id/超长 xpath/nth 依赖），推荐更稳策略（role/text/testid/placeholder）。',
+      '2. 给出可落地的断言补全（URL / title / 关键文案 / 网络结果）。',
+      '3. 若值得改脚本：调用 playwright_update 写回优化后的完整 script；或先用 playwright_inject_asserts。',
+      '4. 拆分可独立的测试场景（登录/主流程/边界），用 markdown 说明。',
+      '5. 最后调用 playwright_save_report（kind=test-enhance）保存结构化报告。',
+    );
+  } else if (mode === 'business-doc') {
+    lines.push(
+      '',
+      '## 任务：业务理解与文档化',
+      '请输出并落盘：',
+      '1. 业务流程说明（步骤、角色、前置条件）。',
+      '2. 用户故事 / 验收标准。',
+      '3. 关键页面与数据流转说明。',
+      '4. 风险点与待补充录制建议。',
+      '5. 调用 playwright_save_report（kind=business-doc）保存完整 Markdown 文档。',
+    );
+  } else if (mode === 'anomaly') {
+    lines.push(
+      '',
+      '## 任务：基线异常 / 回归分析',
+      '请基于基线摘要与最近回放产物：',
+      '1. 判断是否存在回归（失败步骤、脚本漂移、产物差异）。',
+      '2. 结合 Trace / HAR / 日志路径定位根因。',
+      '3. 给出修复建议（选择器、等待、断言、环境差异）。',
+      '4. 必要时调用 playwright_compare_baseline、playwright_list_artifacts、playwright_get。',
+      '5. 调用 playwright_save_report（kind=anomaly）保存异常分析报告。',
+    );
+  } else {
+    lines.push(
+      '',
+      '请输出：',
+      '1. 页面/流程概要（无 PDF 时根据脚本与 URL 推断）',
+      '2. 关键交互与可自动化断言建议（URL / Title / 关键元素）',
+      '3. 风险点或失败高发步骤',
+      '4. 后续可继续录制的操作建议',
+      '',
+      '若结论较完整，可调用 playwright_save_report（kind=general）保存报告。',
+    );
+  }
+
+  lines.push(
+    '',
+    '可用 MCP 工具（mediado）：playwright_get、playwright_update、playwright_inject_asserts、playwright_list_artifacts、playwright_compare_baseline、playwright_save_report、playwright_capture、playwright_play 等。',
+    '优先基于已给脚本与路径分析；确有必要时再调用工具。不要默认再去导出 PDF，除非用户明确要求。',
+    '改脚本前先说明意图；写回后摘要变更点。',
+  );
+
   if (input.note?.trim()) {
     lines.push('', '## 用户请求（会话 Prompt）', input.note.trim());
   }
@@ -1347,13 +1416,16 @@ export async function analyzeWorkflow(
     saveConfig();
   }
 
-  const shouldCapture = request.capturePdf !== false;
+  const analyzeMode: AgentAnalyzeMode = request.mode || 'general';
+  // Anomaly / test-enhance / business-doc prefer existing artifacts; PDF only when explicitly requested via capturePdf.
+  const shouldCapture = request.capturePdf === true
+    || (request.capturePdf !== false && analyzeMode === 'general');
   let pdfPath: string | undefined;
   phase = 'running';
   emit({
     type: 'status',
     phase,
-    message: shouldCapture ? '正在导出 PDF…' : '准备分析…',
+    message: shouldCapture ? '正在导出 PDF…' : `准备${analyzeModeLabel(analyzeMode)}…`,
     workflowId,
     sessionId,
     chatSessionId: chatSession.id,
@@ -1376,10 +1448,17 @@ export async function analyzeWorkflow(
     pdfPath = existing?.path;
   }
 
-  const artifacts = listArtifacts(detail.id).slice(0, 8);
+  const artifacts = listArtifacts(detail.id).slice(0, 12);
   const artifactSummary = artifacts
     .map((item) => `${item.kind}:${item.name}`)
     .join(' · ');
+
+  let baselineSummary = '';
+  try {
+    baselineSummary = compareBaseline(detail.id).summary;
+  } catch {
+    baselineSummary = '';
+  }
 
   const prompt = buildAnalyzePrompt({
     name: detail.name,
@@ -1389,12 +1468,18 @@ export async function analyzeWorkflow(
     pdfPath,
     artifactSummary,
     note: request.note,
+    mode: analyzeMode,
+    baselineSummary,
+    workflowId: detail.id,
   });
 
   const userPrompt = request.note?.trim() || '';
-  const modeLine = shouldCapture
-    ? (pdfPath ? `PDF：${path.basename(pdfPath)}` : '本次未能导出 PDF，将结合脚本与已有产物分析')
-    : '模式：脚本 / 产物分析（未导出 PDF）';
+  const modeLine = [
+    `分析模式：${analyzeModeLabel(analyzeMode)}`,
+    shouldCapture
+      ? (pdfPath ? `PDF：${path.basename(pdfPath)}` : '本次未能导出 PDF，将结合脚本与已有产物分析')
+      : '未导出 PDF（脚本 / 产物 / 基线分析）',
+  ].join(' · ');
   const visible = userPrompt
     ? [
       userPrompt,
@@ -1404,7 +1489,7 @@ export async function analyzeWorkflow(
       modeLine,
     ].join('\n')
     : [
-      `请分析工作流「${detail.name}」`,
+      `请对工作流「${detail.name}」做${analyzeModeLabel(analyzeMode)}`,
       modeLine,
     ].join('\n');
 

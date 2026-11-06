@@ -106,10 +106,25 @@ export interface AgentBridgeStatus {
   lastError: string | null;
 }
 
+/** Focus for workflow analysis prompts. */
+export type AgentAnalyzeMode =
+  | 'general'
+  | 'test-enhance'
+  | 'business-doc'
+  | 'anomaly';
+
 export interface AgentAnalyzeWorkflowRequest {
   workflowId: string;
   /** Capture a fresh PDF before analysis. Default true. */
   capturePdf?: boolean;
+  /**
+   * Analysis focus:
+   * - general: flow summary + risks
+   * - test-enhance: selectors / asserts / writable script improvements
+   * - business-doc: process docs / user stories
+   * - anomaly: baseline vs latest run regression summary
+   */
+  mode?: AgentAnalyzeMode;
   /** Extra user instruction appended to the analysis prompt. */
   note?: string;
   modelId?: string;
