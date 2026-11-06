@@ -1,4 +1,4 @@
-import { callTool, listAgentTools } from './tools';
+import { callTool, listAgentTools } from '../../../platform/tools';
 
 const MAX_TOOL_ROUNDS = 8;
 

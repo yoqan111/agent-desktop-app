@@ -39,19 +39,21 @@ import { CropEditor } from './components/CropEditor';
 import { FileInfo } from './components/FileInfo';
 import type { CropRect } from './components/CropEditor';
 import { PaymentModal } from './components/PaymentModal';
-import { PlaywrightStudio } from './components/PlaywrightStudio';
-import { PwSelect } from './components/PwSelect';
-import { ResizeHandle } from './components/ResizeHandle';
+import { PwSelect } from '../../../shared/ui/PwSelect';
+import { ResizeHandle } from '../../../shared/ui/ResizeHandle';
 import { ResultAudioPlayer } from './components/ResultAudioPlayer';
 import { ResultVideoPlayer } from './components/ResultVideoPlayer';
 import { TimelineTrim } from './components/TimelineTrim';
 import type { TrimRange } from './components/TimelineTrim';
-import { WelcomeScreen } from './components/WelcomeScreen';
+import { WelcomeScreen } from '../../../app/renderer/components/WelcomeScreen';
 import type { ToolTab } from './tools';
 import { kindLabel, toolNavLabel, toolSubtitle, toolTitle, toolsForKind } from './tools';
 
-type ProductMode = 'media' | 'playwright';
 type MainView = 'welcome' | 'editor' | 'result';
+
+export interface MediaWorkspaceProps {
+  onOpenPlaywright: () => void;
+}
 type ElectronFile = File & { path?: string };
 
 const VIDEO_EXTS = new Set(['mp4', 'mov', 'mkv', 'webm', 'avi', 'm4v', 'mpeg', 'mpg', 'wmv', 'flv']);
@@ -147,8 +149,7 @@ function resizeModeLabel(mode: ResizeMode): string {
   return '按宽度';
 }
 
-export function App() {
-  const [productMode, setProductMode] = useState<ProductMode>('media');
+export function MediaWorkspace({ onOpenPlaywright }: MediaWorkspaceProps) {
   const [kind, setKind] = useState<MediaKind>('video');
   const [tab, setTab] = useState<ToolTab>('crop');
   const [mainView, setMainView] = useState<MainView>('welcome');
@@ -866,10 +867,6 @@ export function App() {
     return <ResultVideoPlayer src={url} />;
   }
 
-  if (productMode === 'playwright') {
-    return <PlaywrightStudio onBack={() => setProductMode('media')} />;
-  }
-
   return (
     <>
     <div
@@ -892,7 +889,7 @@ export function App() {
             <em>视频、图片、音频处理工具</em>
           </div>
         </div>
-        <button type="button" className="rail-product" onClick={() => setProductMode('playwright')}>
+        <button type="button" className="rail-product" onClick={onOpenPlaywright}>
           Playwright Studio
         </button>
 
@@ -1733,7 +1730,7 @@ export function App() {
           importing={importing}
           onPick={(nextKind) => { void pickFromWelcome(nextKind); }}
           onStart={startFromWelcome}
-          onOpenPlaywright={() => setProductMode('playwright')}
+          onOpenPlaywright={onOpenPlaywright}
         />
       ) : null}
 

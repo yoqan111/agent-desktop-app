@@ -17,28 +17,28 @@ import type {
   AgentModelInfo,
   AgentProviderKind,
   AgentStreamEvent,
-} from '../../shared/agent';
+} from '../shared/agent';
 import {
   AGENT_PROVIDER_OPTIONS,
   DEFAULT_OPENAI_BASE_URL,
   agentModelKey,
-} from '../../shared/agent';
+} from '../shared/agent';
 import {
   extractLocalArtifacts,
   getLocalArtifactPreviewKind,
   localArtifactPreviewLabel,
   type LocalArtifactRef,
-} from '../../shared/local-artifacts';
+} from '../shared/local-artifacts';
 import {
   PLAYWRIGHT_ANALYZE_MODES,
   type PlaywrightWorkflowMeta,
-} from '../../shared/playwright';
-import { askConfirm } from '../confirm';
+} from '../shared/playwright';
+import { askConfirm } from '../../../shared/confirm-host';
 import { AgentMarkdown } from './AgentMarkdown';
-import { FloatingNotice } from './FloatingNotice';
+import { FloatingNotice } from '../../../shared/ui/FloatingNotice';
 import { LocalArtifactPreview } from './LocalArtifactPreview';
-import { PwSelect } from './PwSelect';
-import { ResizeHandle } from './ResizeHandle';
+import { PwSelect } from '../../../shared/ui/PwSelect';
+import { ResizeHandle } from '../../../shared/ui/ResizeHandle';
 
 interface MentionedWorkflow {
   id: string;
@@ -1784,12 +1784,14 @@ export function AgentChatPanel({
           {busy ? (
             <button
               type="button"
-              className={`agent-jump-bottom${atBottom ? ' is-at-bottom' : ''}`}
+              className={`agent-jump-bottom is-running${atBottom ? ' is-at-bottom' : ''}`}
               onClick={jumpToOutputBottom}
-              title="跳到输出底部"
-              aria-label="跳到输出底部"
+              title="Agent 执行中 · 跳到输出底部"
+              aria-label="Agent 执行中，跳到输出底部"
             >
-              <IconJumpDown />
+              <span className="agent-jump-bottom-icon" aria-hidden>
+                <IconJumpDown />
+              </span>
             </button>
           ) : null}
         </div>

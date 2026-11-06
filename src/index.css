@@ -3362,16 +3362,43 @@ button:disabled { opacity: 0.45; cursor: default; }
   place-items: center;
   width: 40px;
   height: 40px;
-  border: 1px solid rgba(74, 222, 128, 0.5);
+  border: 1px solid rgba(74, 222, 128, 0.55);
   border-radius: 999px;
   background: rgba(8, 14, 10, 0.92);
   color: var(--accent);
   box-shadow:
     0 0 0 1px rgba(74, 222, 128, 0.12),
     0 8px 20px rgba(0, 0, 0, 0.45),
-    0 0 18px rgba(74, 222, 128, 0.14);
-  animation: agent-jump-bounce 1.35s ease-in-out infinite;
+    0 0 18px rgba(74, 222, 128, 0.18);
   backdrop-filter: blur(8px);
+}
+
+.agent-jump-bottom::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  border: 1px solid rgba(74, 222, 128, 0.45);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.agent-jump-bottom.is-running::before {
+  animation: agent-jump-ring 1.4s ease-out infinite;
+}
+
+.agent-jump-bottom.is-running {
+  animation: agent-jump-glow 1.4s ease-in-out infinite;
+}
+
+.agent-jump-bottom-icon {
+  display: grid;
+  place-items: center;
+  line-height: 0;
+}
+
+.agent-jump-bottom.is-running .agent-jump-bottom-icon {
+  animation: agent-jump-arrow 0.9s ease-in-out infinite;
 }
 
 .agent-jump-bottom:hover {
@@ -3381,17 +3408,54 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 
 .agent-jump-bottom.is-at-bottom {
-  opacity: 0.42;
+  opacity: 0.55;
+}
+
+.agent-jump-bottom.is-at-bottom.is-running::before {
   animation-duration: 2s;
 }
 
-.agent-jump-bottom.is-at-bottom:hover {
-  opacity: 0.85;
+.agent-jump-bottom.is-at-bottom.is-running .agent-jump-bottom-icon {
+  animation-duration: 1.35s;
 }
 
-@keyframes agent-jump-bounce {
-  0%, 100% { transform: translateX(-50%); }
-  50% { transform: translateX(-50%) translateY(5px); }
+.agent-jump-bottom.is-at-bottom:hover {
+  opacity: 0.9;
+}
+
+@keyframes agent-jump-arrow {
+  0%, 100% { transform: translateY(-2px); }
+  50% { transform: translateY(4px); }
+}
+
+@keyframes agent-jump-ring {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.55;
+  }
+  70% {
+    transform: scale(1.28);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.28);
+    opacity: 0;
+  }
+}
+
+@keyframes agent-jump-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px rgba(74, 222, 128, 0.12),
+      0 8px 20px rgba(0, 0, 0, 0.45),
+      0 0 14px rgba(74, 222, 128, 0.16);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px rgba(74, 222, 128, 0.22),
+      0 8px 20px rgba(0, 0, 0, 0.45),
+      0 0 26px rgba(74, 222, 128, 0.38);
+  }
 }
 
 .agent-empty {
@@ -4582,8 +4646,14 @@ button:disabled { opacity: 0.45; cursor: default; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .agent-jump-bottom {
+  .agent-jump-bottom.is-running,
+  .agent-jump-bottom.is-running::before,
+  .agent-jump-bottom.is-running .agent-jump-bottom-icon {
     animation: none;
+  }
+
+  .agent-jump-bottom.is-running {
+    animation: agent-jump-glow 2s ease-in-out infinite;
   }
 }
 

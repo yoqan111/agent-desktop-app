@@ -1,5 +1,5 @@
 import { useEffect, useId, useState, type ReactElement } from 'react';
-import type { ConfirmAskPayload, ConfirmOptions } from '../../shared/confirm';
+import type { ConfirmAskPayload, ConfirmOptions } from '../../../shared/confirm';
 import { askConfirm, bindConfirmHost, resolveConfirm } from '../confirm';
 
 export function ConfirmDialogView({

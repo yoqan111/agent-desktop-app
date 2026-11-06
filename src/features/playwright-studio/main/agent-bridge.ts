@@ -46,7 +46,7 @@ import {
   updateChatSession,
   upsertChatMessage,
 } from './agent-sessions';
-import { getMcpServerUrl } from './mcp-server';
+import { getMcpServerUrl } from '../../../platform/mcp-server';
 import { runOpenAICompatibleAgent } from './openai-agent';
 import {
   capturePage,

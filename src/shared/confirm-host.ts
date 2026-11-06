@@ -1,4 +1,4 @@
-import type { ConfirmOptions } from '../shared/confirm';
+import type { ConfirmOptions } from './confirm';
 
 type ConfirmRequest = {
   options: ConfirmOptions;

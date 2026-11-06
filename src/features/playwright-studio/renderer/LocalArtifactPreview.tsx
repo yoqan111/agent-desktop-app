@@ -3,7 +3,7 @@ import {
   getLocalArtifactPreviewKind,
   localArtifactPreviewLabel,
   type LocalArtifactRef,
-} from '../../shared/local-artifacts';
+} from '../shared/local-artifacts';
 import { AgentMarkdown } from './AgentMarkdown';
 
 const TEXT_PREVIEW_LIMIT = 400_000;

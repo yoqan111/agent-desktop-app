@@ -17,8 +17,8 @@ import {
   trimAudio,
   videoToGif,
   adjustVideo,
-} from './media';
-import { assertAgentPath, grantInput } from './access';
+} from '../features/media/main/media';
+import { assertAgentPath, grantInput } from '../features/media/main/access';
 import { askUserConfirm } from './confirm';
 import {
   capturePage,
@@ -46,7 +46,7 @@ import {
   startRecord,
   stopJob,
   updateWorkflow,
-} from './playwright-studio';
+} from '../features/playwright-studio/main/playwright-studio';
 import type {
   AspectRatio,
   AspectRequest,
@@ -81,7 +81,7 @@ import type {
   VideoAdjustOutput,
   VideoAdjustRequest,
   VideoFormat,
-} from '../shared/media';
+} from '../features/media/shared/media';
 import {
   ASPECT_RATIOS,
   AUDIO_FORMATS,
@@ -94,21 +94,21 @@ import {
   SPEED_RATES,
   STAMP_POSITIONS,
   VIDEO_FORMATS,
-} from '../shared/media';
+} from '../features/media/shared/media';
 import {
   PLAYWRIGHT_ASSERT_TEMPLATES,
   PLAYWRIGHT_AUTH_BEFORE_PLAY,
   PLAYWRIGHT_BROWSERS,
   PLAYWRIGHT_DEVICES,
   PLAYWRIGHT_RUN_MODES,
-} from '../shared/playwright';
+} from '../features/playwright-studio/shared/playwright';
 import type {
   PlaywrightAssertTemplate,
   PlaywrightAuthBeforePlay,
   PlaywrightBrowser,
   PlaywrightCaptureKind,
   PlaywrightRunMode,
-} from '../shared/playwright';
+} from '../features/playwright-studio/shared/playwright';
 
 export interface ToolContext {
   source: 'ui' | 'agent';

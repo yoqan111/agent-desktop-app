@@ -1,8 +1,17 @@
 import { useEffect, useMemo, useState, type ReactElement } from 'react';
-import type { MediaKind } from '../../shared/media';
-import { AUDIO_FORMATS, IMAGE_FORMATS, VIDEO_FORMATS } from '../../shared/media';
-import type { ToolTab } from '../tools';
-import { kindLabel, toolSubtitle, toolTitle, toolsForKind } from '../tools';
+import {
+  AUDIO_FORMATS,
+  IMAGE_FORMATS,
+  VIDEO_FORMATS,
+  type MediaKind,
+} from '../../../features/media/shared/media';
+import {
+  kindLabel,
+  toolSubtitle,
+  toolTitle,
+  toolsForKind,
+  type ToolTab,
+} from '../../../features/media/renderer/tools';
 
 const KINDS: MediaKind[] = ['video', 'image', 'audio'];
 const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as const;

@@ -1,7 +1,7 @@
 import { app, autoUpdater, BrowserWindow } from 'electron';
 import { updateElectronApp, UpdateSourceType } from 'update-electron-app';
-import { idleUpdateState, UpdaterIpc } from './shared/updater';
-import type { UpdateState } from './shared/updater';
+import { idleUpdateState, UpdaterIpc } from '../shared/updater';
+import type { UpdateState } from '../shared/updater';
 
 let state: UpdateState = { ...idleUpdateState };
 let started = false;

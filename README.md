@@ -7,6 +7,8 @@
 - **媒体处理**：视频 / 图片 / 音频本地工具台
 - **浏览器自动化**：Playwright Studio（录制、管理、回放），与媒体素材无关
 
+代码按 **Feature Module** 组织：`src/app`（壳）+ `src/features/{media,playwright-studio}` + `src/platform` + `src/shared`。详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
 ## 开发
 
 ```bash
@@ -91,23 +93,16 @@ Playwright 类工具：`playwright_record`、`playwright_play`、`playwright_pla
 ## 目录
 
 ```text
-src/main.ts                     生命周期、IPC、MCP 启动
-src/main/media.ts               FFmpeg 探测与媒体处理
-src/main/playwright-studio.ts   Playwright 录制 / 回放 / 浏览器安装
-src/main/tools.ts               MCP / Agent 工具声明
-src/main/mcp-server.ts          本机 MCP 服务
-src/main/windows.ts             窗口
-src/preload.ts                  window.media / playwright
-src/renderer/                   MediaDo UI + Playwright Studio
-src/renderer/components/WelcomeScreen.tsx   首页（媒体与自动化分区）
-src/shared/media.ts             媒体协议
-src/shared/playwright.ts        Playwright 协议
-src/updater.ts                  自动升级（可选）
+src/app/                        应用壳（main / preload / 窗口 / 产品切换）
+src/features/media/             媒体处理（main / renderer / shared，含支付）
+src/features/playwright-studio/ Playwright Studio + Agent
+src/platform/                   MCP、tools 聚合、主进程 confirm
+src/shared/                     跨模块公共（confirm / updater / ui）
 forge.config.ts                 打包；解包 ffmpeg 二进制
 forge/native.ts                 packageAfterCopy 拷贝 runtime 包
 ```
 
-方案说明见 [docs/方案设计.md](docs/方案设计.md)。媒体打包见 [docs/media-packaging.md](docs/media-packaging.md)。Agent 接入见 [docs/agent-mcp.md](docs/agent-mcp.md)。
+架构约定见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。方案说明见 [docs/方案设计.md](docs/方案设计.md)。媒体打包见 [docs/media-packaging.md](docs/media-packaging.md)。Agent 接入见 [docs/agent-mcp.md](docs/agent-mcp.md)。
 
 ## 签名与升级
 

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import { MediaIpc, toMediaPreviewUrl } from './shared/media';
+import { MediaIpc, toMediaPreviewUrl } from '../features/media/shared/media';
 import type {
   AspectRequest,
   CompressRequest,
@@ -22,14 +22,14 @@ import type {
   StampRequest,
   TrimAudioRequest,
   VideoAdjustRequest,
-} from './shared/media';
-import { PaymentIpc } from './shared/payment';
+} from '../features/media/shared/media';
+import { PaymentIpc } from '../features/media/shared/payment';
 import type {
   CreatePayOrderRequest,
   PayProduct,
   PaymentApi,
-} from './shared/payment';
-import { AgentIpc } from './shared/agent';
+} from '../features/media/shared/payment';
+import { AgentIpc } from '../features/playwright-studio/shared/agent';
 import type {
   AgentAnalyzeWorkflowRequest,
   AgentApi,
@@ -39,10 +39,10 @@ import type {
   AgentSetConfigRequest,
   AgentStreamEvent,
   AgentUpdateSessionRequest,
-} from './shared/agent';
-import { ConfirmIpc } from './shared/confirm';
-import type { ConfirmAskPayload } from './shared/confirm';
-import { PlaywrightIpc } from './shared/playwright';
+} from '../features/playwright-studio/shared/agent';
+import { ConfirmIpc } from '../shared/confirm';
+import type { ConfirmAskPayload } from '../shared/confirm';
+import { PlaywrightIpc } from '../features/playwright-studio/shared/playwright';
 import type {
   PlaywrightApi,
   PlaywrightAssertRequest,
@@ -53,9 +53,9 @@ import type {
   PlaywrightRunEvent,
   PlaywrightScheduleConfig,
   PlaywrightUpdateRequest,
-} from './shared/playwright';
-import { UpdaterIpc } from './shared/updater';
-import type { UpdateState, UpdaterApi } from './shared/updater';
+} from '../features/playwright-studio/shared/playwright';
+import { UpdaterIpc } from '../shared/updater';
+import type { UpdateState, UpdaterApi } from '../shared/updater';
 
 const media: MediaApi = {
   pickMedia: (kind: MediaKind) => ipcRenderer.invoke(MediaIpc.pick, kind),

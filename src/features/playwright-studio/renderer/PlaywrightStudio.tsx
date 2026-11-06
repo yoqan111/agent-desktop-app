@@ -12,7 +12,7 @@ import type {
   PlaywrightStudioStatus,
   PlaywrightWorkflowDetail,
   PlaywrightWorkflowMeta,
-} from '../../shared/playwright';
+} from '../shared/playwright';
 import {
   PLAYWRIGHT_ANALYZE_MODES,
   PLAYWRIGHT_AUTH_BEFORE_PLAY,
@@ -21,13 +21,13 @@ import {
   PLAYWRIGHT_DEVICES,
   PLAYWRIGHT_RUN_MODES,
   type PlaywrightAnalyzeMode,
-} from '../../shared/playwright';
-import type { AgentAnalyzeMode } from '../../shared/agent';
-import { askConfirm } from '../confirm';
+} from '../shared/playwright';
+import type { AgentAnalyzeMode } from '../shared/agent';
+import { askConfirm } from '../../../shared/confirm-host';
 import { AgentChatPanel } from './AgentChatPanel';
-import { FloatingNotice } from './FloatingNotice';
-import { PwSelect } from './PwSelect';
-import { ResizeHandle } from './ResizeHandle';
+import { FloatingNotice } from '../../../shared/ui/FloatingNotice';
+import { PwSelect } from '../../../shared/ui/PwSelect';
+import { ResizeHandle } from '../../../shared/ui/ResizeHandle';
 
 function readPaneWidth(key: string, fallback: number): number {
   try {
