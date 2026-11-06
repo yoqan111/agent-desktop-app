@@ -38,6 +38,8 @@ import {
   playBatch,
   playWorkflow,
   revealArtifact,
+  listScriptSteps,
+  runWithParams,
   saveBaseline,
   saveReport,
   setSchedule,
@@ -1318,6 +1320,78 @@ const tools: ToolDefinition[] = [
         content: requiredString(obj, 'content'),
         title: optionalString(obj, 'title'),
         kind,
+      });
+    },
+  },
+  {
+    name: 'playwright_list_steps',
+    description: '解析录制脚本中可参数化的步骤（goto / fill / type / selectOption），供按 Prompt 替换后再执行。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflowId: { type: 'string' },
+      },
+      required: ['workflowId'],
+      additionalProperties: false,
+    },
+    run: async (args) => {
+      const obj = asObject(args);
+      const workflowId = requiredString(obj, 'workflowId');
+      const steps = listScriptSteps(workflowId);
+      return {
+        workflowId,
+        steps,
+        tip: '把用户 Prompt 中的关键信息映射到 step.id / index / hint，再调用 playwright_run_with_params。',
+      };
+    },
+  },
+  {
+    name: 'playwright_run_with_params',
+    description: '按参数替换录制脚本中的 URL/表单值后自动回放（打开页面并逐步操作）。params 可用 step.id、序号、hint、邮箱/密码等别名。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        workflowId: { type: 'string' },
+        params: {
+          type: 'object',
+          description: '键值对，如 {"0":"https://...","邮箱":"a@b.com","密码":"xxx"} 或 {"fill-1":"新值"}。',
+          additionalProperties: { type: 'string' },
+        },
+        mode: { type: 'string', enum: PLAYWRIGHT_RUN_MODES },
+        browser: { type: 'string', enum: PLAYWRIGHT_BROWSERS },
+        slowMoMs: { type: 'number' },
+        recordHar: { type: 'boolean' },
+        persistScript: {
+          type: 'boolean',
+          description: '是否把替换后的脚本写回工作流；默认 false（仅本次执行）。',
+        },
+        wait: { type: 'boolean', description: '是否等待回放结束。Agent 默认 true。' },
+      },
+      required: ['workflowId', 'params'],
+      additionalProperties: false,
+    },
+    run: async (args, ctx) => {
+      const obj = asObject(args);
+      const paramsRaw = obj.params;
+      if (!paramsRaw || typeof paramsRaw !== 'object' || Array.isArray(paramsRaw)) {
+        throw new Error('params 必须是对象，例如 {"邮箱":"a@b.com","密码":"secret"}。');
+      }
+      const params: Record<string, string> = {};
+      for (const [key, value] of Object.entries(paramsRaw as Record<string, unknown>)) {
+        if (typeof value === 'string') params[key] = value;
+        else if (typeof value === 'number' || typeof value === 'boolean') params[key] = String(value);
+      }
+      const wait = optionalBoolean(obj, 'wait');
+      return runWithParams({
+        workflowId: requiredString(obj, 'workflowId'),
+        params,
+        mode: oneOf(optionalString(obj, 'mode'), PLAYWRIGHT_RUN_MODES, '回放模式') as PlaywrightRunMode | undefined,
+        browser: oneOf(optionalString(obj, 'browser'), PLAYWRIGHT_BROWSERS, '浏览器') as PlaywrightBrowser | undefined,
+        slowMoMs: optionalNumber(obj, 'slowMoMs'),
+        recordHar: optionalBoolean(obj, 'recordHar'),
+        persistScript: optionalBoolean(obj, 'persistScript'),
+      }, {
+        wait: wait ?? ctx.source === 'agent',
       });
     },
   },

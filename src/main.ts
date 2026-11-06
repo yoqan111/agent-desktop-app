@@ -46,6 +46,7 @@ import {
   installBrowsers,
   deleteArtifact,
   listArtifacts,
+  listScriptSteps,
   listWorkflows,
   openArtifactsFolder,
   openTrace,
@@ -54,6 +55,7 @@ import {
   playWorkflow,
   revealArtifact,
   revealStudioRoot,
+  runWithParams,
   saveBaseline,
   saveReport,
   setPlaywrightEventSink,
@@ -89,6 +91,7 @@ import type {
   PlaywrightCaptureRequest,
   PlaywrightPlayRequest,
   PlaywrightRecordRequest,
+  PlaywrightRunWithParamsRequest,
   PlaywrightSaveBaselineRequest,
   PlaywrightSaveReportRequest,
   PlaywrightScheduleConfig,
@@ -381,6 +384,13 @@ function registerIpcHandlers(): void {
   });
   ipcMain.handle(PlaywrightIpc.saveReport, (_event, payload: unknown) => {
     return saveReport(payload as PlaywrightSaveReportRequest);
+  });
+  ipcMain.handle(PlaywrightIpc.listScriptSteps, (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('工作流 ID 无效。');
+    return listScriptSteps(id);
+  });
+  ipcMain.handle(PlaywrightIpc.runWithParams, (_event, payload: unknown) => {
+    return runWithParams(payload as PlaywrightRunWithParamsRequest, { wait: true });
   });
   ipcMain.handle(PlaywrightIpc.getSchedule, () => getSchedule());
   ipcMain.handle(PlaywrightIpc.setSchedule, (_event, payload: unknown) => {

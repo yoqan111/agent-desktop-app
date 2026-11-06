@@ -116,7 +116,43 @@ function analyzeModeLabel(mode: PlaywrightAnalyzeMode | AgentAnalyzeMode): strin
   if (mode === 'test-enhance') return '智能测试增强';
   if (mode === 'business-doc') return '业务理解与文档';
   if (mode === 'anomaly') return '基线异常分析';
+  if (mode === 'auto-run') return '录制自动执行';
+  if (mode === 'param-run') return '参数化执行';
   return '综合分析';
+}
+
+function defaultAnalyzePrompt(mode: AgentAnalyzeMode, name: string): string {
+  if (mode === 'business-doc') {
+    return `请把工作流「${name}」整理成业务流程文档与用户故事，并保存报告。`;
+  }
+  if (mode === 'anomaly') {
+    return `请对比工作流「${name}」的基线与最近回放，定位回归原因并给出修复建议。`;
+  }
+  if (mode === 'test-enhance') {
+    return `请增强工作流「${name}」的可维护性：优化选择器、补全断言，必要时写回脚本并保存测试增强报告。`;
+  }
+  if (mode === 'auto-run') {
+    return [
+      `请自动执行工作流「${name}」（按录制步骤操作真实页面；是否有头窗口以确认框选择为准）。`,
+      '本次参数（按需修改）：',
+      '- URL：',
+      '- 邮箱：',
+      '- 密码：',
+      '- 标题：',
+    ].join('\n');
+  }
+  if (mode === 'param-run') {
+    return [
+      `请参数化执行工作流「${name}」。`,
+      '先列出录制步骤，再按我提供的关键信息替换后自动打开页面并操作。',
+      '本次关键信息：',
+      '- URL：',
+      '- 字段1：',
+      '- 字段2：',
+      '（请改成真实值；也可用「邮箱 / 密码 / 标题」等别名）',
+    ].join('\n');
+  }
+  return `请分析工作流「${name}」，给出页面/流程概要、关键断言建议、风险点与后续录制建议。`;
 }
 
 function jobKindLabel(kind?: string): string {
@@ -214,7 +250,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
   const [usePersistentProfile, setUsePersistentProfile] = useState(true);
   const [notes, setNotes] = useState('');
 
-  const [playMode, setPlayMode] = useState<PlaywrightRunMode>('headed');
+  const [playMode, setPlayMode] = useState<PlaywrightRunMode>('headless');
   const [playBrowser, setPlayBrowser] = useState<PlaywrightBrowser>('chromium');
   const [slowMo, setSlowMo] = useState(String(PLAYWRIGHT_DEFAULT_SLOW_MO_MS));
   const [scriptDraft, setScriptDraft] = useState('');
@@ -231,6 +267,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
   const [agentCapturePdf, setAgentCapturePdf] = useState(true);
   const [agentAnalyzeMode, setAgentAnalyzeMode] = useState<AgentAnalyzeMode>('test-enhance');
   const [agentAnalyzeNote, setAgentAnalyzeNote] = useState('');
+  const [agentAnalyzeHeaded, setAgentAnalyzeHeaded] = useState(false);
   const [agentLaunchKey, setAgentLaunchKey] = useState(0);
   const [recordHar, setRecordHar] = useState(false);
   const [saveBaselineOnPass, setSaveBaselineOnPass] = useState(false);
@@ -239,6 +276,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
     name: string;
     capturePdf: boolean;
     mode: AgentAnalyzeMode;
+    headed: boolean;
     prompt: string;
   } | null>(null);
   const [railWidth, setRailWidth] = useState(() => readPaneWidth('pw-studio-rail', 220));
@@ -435,11 +473,26 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
       setPlayBrowser(created.browser);
       setSlowMo(String(resolveSlowMoMs(created)));
       await refresh();
+      setLivePhase('passed');
+      setLogLines((prev) => [...prev, `录制已保存：${created.name}`]);
       setTab('detail');
+      setBusy(false);
+      const handoff = await askConfirm({
+        title: '录制已保存',
+        message: `「${created.name}」已写入工作流。是否交给 Agent 按录制步骤自动执行（默认无头，可在 Prompt 里替换表单参数）？`,
+        confirmLabel: 'Agent 自动执行',
+        cancelLabel: '稍后再说',
+      });
+      if (handoff) {
+        requestAgentAnalyze(created.id, {
+          capturePdf: false,
+          name: created.name,
+          mode: 'auto-run',
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : '录制启动失败');
       setLivePhase('failed');
-    } finally {
       setBusy(false);
     }
   }
@@ -715,24 +768,18 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
 
   function requestAgentAnalyze(
     id: string,
-    options?: { capturePdf?: boolean; name?: string; mode?: AgentAnalyzeMode },
+    options?: { capturePdf?: boolean; name?: string; mode?: AgentAnalyzeMode; headed?: boolean },
   ): void {
     const workflow = list.find((item) => item.id === id);
     const name = options?.name || workflow?.name || detail?.name || '该工作流';
     const mode = options?.mode || 'test-enhance';
-    const defaultPrompt = mode === 'business-doc'
-      ? `请把工作流「${name}」整理成业务流程文档与用户故事，并保存报告。`
-      : mode === 'anomaly'
-        ? `请对比工作流「${name}」的基线与最近回放，定位回归原因并给出修复建议。`
-        : mode === 'test-enhance'
-          ? `请增强工作流「${name}」的可维护性：优化选择器、补全断言，必要时写回脚本并保存测试增强报告。`
-          : `请分析工作流「${name}」，给出页面/流程概要、关键断言建议、风险点与后续录制建议。`;
     setPendingAgentAnalyze({
       ids: [id],
       name,
       capturePdf: options?.capturePdf === true,
       mode,
-      prompt: defaultPrompt,
+      headed: options?.headed === true,
+      prompt: defaultAnalyzePrompt(mode, name),
     });
   }
 
@@ -758,6 +805,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
       name: `${selectedIds.length} 条工作流`,
       capturePdf: false,
       mode: 'test-enhance',
+      headed: false,
       prompt: `请分别对以下工作流做智能测试增强（${namePreview}）：优化选择器、补全断言建议，并保存报告。`,
     });
   }
@@ -816,6 +864,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
     if (pending.ids.length === 1) {
       setAgentCapturePdf(pending.capturePdf);
       setAgentAnalyzeMode(pending.mode);
+      setAgentAnalyzeHeaded(pending.headed);
       setAgentAnalyzeNote(prompt);
       setAgentLaunchKey((key) => key + 1);
       setAgentAutoStart(true);
@@ -835,6 +884,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
       setLivePhase('running');
       setAgentAutoStart(false);
       setAgentAnalyzeMode(pending.mode);
+      setAgentAnalyzeHeaded(pending.headed);
       setTab('agent');
       setLogLines([`批量 Agent 分析（${analyzeModeLabel(pending.mode)}）：${pending.ids.length} 条`]);
       let failed = 0;
@@ -855,6 +905,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
               workflowId: id,
               capturePdf: pending.capturePdf,
               mode: pending.mode,
+              headed: pending.headed,
               note: prompt,
               chatSessionId: created.id,
             });
@@ -1154,6 +1205,18 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                         }}
                       >
                         回放
+                      </button>
+                      <button
+                        type="button"
+                        className="pw-row-btn is-primary"
+                        disabled={jobLocked}
+                        onClick={() => requestAgentAnalyze(item.id, {
+                          capturePdf: false,
+                          name: item.name,
+                          mode: 'auto-run',
+                        })}
+                      >
+                        Agent 执行
                       </button>
                       <button
                         type="button"
@@ -1541,6 +1604,30 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                     onClick={() => requestAgentAnalyze(detail.id, {
                       capturePdf: false,
                       name: detail.name,
+                      mode: 'auto-run',
+                    })}
+                  >
+                    Agent 自动执行
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={jobLocked}
+                    onClick={() => requestAgentAnalyze(detail.id, {
+                      capturePdf: false,
+                      name: detail.name,
+                      mode: 'param-run',
+                    })}
+                  >
+                    参数化执行
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    disabled={jobLocked}
+                    onClick={() => requestAgentAnalyze(detail.id, {
+                      capturePdf: false,
+                      name: detail.name,
                       mode: 'test-enhance',
                     })}
                   >
@@ -1733,6 +1820,7 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
             capturePdf={agentCapturePdf}
             analyzeMode={agentAnalyzeMode}
             analyzeNote={agentAnalyzeNote}
+            analyzeHeaded={agentAnalyzeHeaded}
             onAutoStarted={() => setAgentAutoStart(false)}
             onBusyChange={(agentBusy) => {
               if (agentBusy) setLivePhase('running');
@@ -1885,19 +1973,11 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                   const mode = value as AgentAnalyzeMode;
                   setPendingAgentAnalyze((prev) => {
                     if (!prev) return prev;
-                    const name = prev.name;
-                    const prompt = mode === 'business-doc'
-                      ? `请把「${name}」整理成业务流程文档与用户故事，并保存报告。`
-                      : mode === 'anomaly'
-                        ? `请对比「${name}」基线与最近回放，定位回归原因并给出修复建议。`
-                        : mode === 'test-enhance'
-                          ? `请增强「${name}」：优化选择器、补全断言，必要时写回脚本并保存报告。`
-                          : prev.prompt;
                     return {
                       ...prev,
                       mode,
                       capturePdf: mode === 'general' ? prev.capturePdf : false,
-                      prompt,
+                      prompt: defaultAnalyzePrompt(mode, prev.name),
                     };
                   });
                 }}
@@ -1910,7 +1990,11 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
                       ? '流程文档 / 用户故事 / 验收标准'
                       : mode === 'anomaly'
                         ? '基线对比、回归定位、修复建议'
-                        : '综合概要与风险建议',
+                        : mode === 'auto-run'
+                          ? '按录制步骤自动执行；默认无头，可选有头窗口'
+                          : mode === 'param-run'
+                            ? '用 Prompt 参数替换后自动执行；默认无头，可选有头窗口'
+                            : '综合概要与风险建议',
                 }))}
               />
             </label>
@@ -1928,6 +2012,24 @@ export function PlaywrightStudio({ onBack }: { onBack: () => void }): ReactEleme
               />
               <span className="hint">必填。会带入新会话作为首条消息；后台仍会附带脚本 / URL / 产物 / 基线上下文。</span>
             </label>
+            {(pendingAgentAnalyze.mode === 'auto-run' || pendingAgentAnalyze.mode === 'param-run') ? (
+              <label className={`pw-option-card${pendingAgentAnalyze.headed ? ' is-on' : ''}`}>
+                <input
+                  type="checkbox"
+                  checked={pendingAgentAnalyze.headed}
+                  onChange={(event) => {
+                    const headed = event.target.checked;
+                    setPendingAgentAnalyze((prev) => (prev ? { ...prev, headed } : prev));
+                  }}
+                />
+                <span className="pw-option-body">
+                  <span className="pw-option-title">有头窗口执行</span>
+                  <span className="pw-option-desc">
+                    勾选后打开可见浏览器跑录制步骤；不勾选则无头执行（与「回放」按钮无关，回放默认也是无头）。
+                  </span>
+                </span>
+              </label>
+            ) : null}
             <label className="field">
               上下文采集
               <PwSelect

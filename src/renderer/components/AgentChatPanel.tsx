@@ -65,6 +65,11 @@ interface AgentChatPanelProps {
   analyzeMode?: AgentAnalyzeMode;
   /** Optional note appended to the first auto-started analysis. */
   analyzeNote?: string;
+  /**
+   * For auto-run / param-run: show a real browser window while executing.
+   * Default false (headless). Independent of Studio「回放」.
+   */
+  analyzeHeaded?: boolean;
   /** When auto-starting, create a brand-new chat session instead of reusing the active one. */
   forceNewSession?: boolean;
   onBusyChange?: (busy: boolean) => void;
@@ -76,6 +81,8 @@ function analyzeModeLabel(mode: AgentAnalyzeMode): string {
   if (mode === 'test-enhance') return '智能测试增强';
   if (mode === 'business-doc') return '业务理解与文档';
   if (mode === 'anomaly') return '基线异常分析';
+  if (mode === 'auto-run') return '录制自动执行';
+  if (mode === 'param-run') return '参数化执行';
   return '综合分析';
 }
 
@@ -83,6 +90,8 @@ function analyzeModeHint(mode: AgentAnalyzeMode): string {
   if (mode === 'test-enhance') return '补断言、稳定选择器与可回归建议';
   if (mode === 'business-doc') return '梳理业务路径并生成说明文档';
   if (mode === 'anomaly') return '对比基线，定位异常与回归风险';
+  if (mode === 'auto-run') return '按录制步骤自动执行；可选手动开有头窗口';
+  if (mode === 'param-run') return 'Prompt 参数替换后执行；可选手动开有头窗口';
   return '通读脚本、产物与日志给出总览';
 }
 
@@ -251,6 +260,7 @@ export function AgentChatPanel({
   capturePdf = true,
   analyzeMode = 'test-enhance',
   analyzeNote = '',
+  analyzeHeaded = false,
   forceNewSession = false,
   onBusyChange,
   onAutoStarted,
@@ -290,6 +300,7 @@ export function AgentChatPanel({
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionStart, setMentionStart] = useState<number | null>(null);
   const [panelAnalyzeMode, setPanelAnalyzeMode] = useState<AgentAnalyzeMode>(analyzeMode);
+  const [panelAnalyzeHeaded, setPanelAnalyzeHeaded] = useState(analyzeHeaded);
   const listRef = useRef<HTMLDivElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLFormElement | null>(null);
@@ -302,6 +313,7 @@ export function AgentChatPanel({
       freshSession?: boolean;
       workflow?: MentionedWorkflow | null;
       mode?: AgentAnalyzeMode;
+      headed?: boolean;
     },
   ) => Promise<void>>(async () => undefined);
   const onAutoStartedRef = useRef(onAutoStarted);
@@ -328,6 +340,10 @@ export function AgentChatPanel({
   useEffect(() => {
     setPanelAnalyzeMode(analyzeMode);
   }, [analyzeMode]);
+
+  useEffect(() => {
+    setPanelAnalyzeHeaded(analyzeHeaded);
+  }, [analyzeHeaded]);
 
   useEffect(() => {
     if (!window.playwright?.listWorkflows) return;
@@ -728,6 +744,7 @@ export function AgentChatPanel({
       freshSession?: boolean;
       workflow?: MentionedWorkflow | null;
       mode?: AgentAnalyzeMode;
+      headed?: boolean;
     },
   ) => {
     const target = options?.workflow || mentionedWorkflow || (
@@ -735,6 +752,7 @@ export function AgentChatPanel({
     );
     if (!target?.id || !window.agent) return;
     const mode = options?.mode || panelAnalyzeMode;
+    const headed = options?.headed ?? panelAnalyzeHeaded;
     setError('');
     setBusy(true);
     try {
@@ -769,6 +787,7 @@ export function AgentChatPanel({
         workflowId: target.id,
         capturePdf: withPdf,
         mode,
+        headed: (mode === 'auto-run' || mode === 'param-run') ? headed : undefined,
         note: note?.trim() || undefined,
         modelKey: selectedModelKey || status?.modelKey,
         modelId: status?.modelId,
@@ -784,6 +803,7 @@ export function AgentChatPanel({
     analyzeNote,
     capturePdf,
     mentionedWorkflow,
+    panelAnalyzeHeaded,
     panelAnalyzeMode,
     scheduleRefreshSessions,
     selectedModelKey,
@@ -811,8 +831,9 @@ export function AgentChatPanel({
     void startAnalyzeRef.current(capturePdf, analyzeNote, {
       freshSession: forceNewSession,
       mode: analyzeMode,
+      headed: analyzeHeaded,
     });
-    // capturePdf / analyzeNote / mode / forceNewSession are read once at the rising edge.
+    // capturePdf / analyzeNote / mode / headed / forceNewSession are read once at the rising edge.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot auto-start
   }, [autoStart, status?.hasApiKey, workflowId]);
 
@@ -1788,6 +1809,17 @@ export function AgentChatPanel({
                   }))}
                 />
               </label>
+              {(panelAnalyzeMode === 'auto-run' || panelAnalyzeMode === 'param-run') ? (
+                <label className="checkbox-field agent-headed-field" title="勾选后打开可见浏览器执行录制步骤">
+                  <input
+                    type="checkbox"
+                    checked={panelAnalyzeHeaded}
+                    disabled={busy}
+                    onChange={(event) => setPanelAnalyzeHeaded(event.target.checked)}
+                  />
+                  <span>有头窗口</span>
+                </label>
+              ) : null}
 
               <div className="agent-composer-actions">
                 <button
@@ -1795,7 +1827,12 @@ export function AgentChatPanel({
                   className="btn-primary"
                   disabled={busy || !effectiveWorkflowId || !status?.hasApiKey}
                   title={`按「${analyzeModeLabel(panelAnalyzeMode)}」分析脚本 / 产物 / 基线（不导出 PDF）`}
-                  onClick={() => { void startAnalyze(false, analyzeNote, { mode: panelAnalyzeMode }); }}
+                  onClick={() => {
+                    void startAnalyze(false, analyzeNote, {
+                      mode: panelAnalyzeMode,
+                      headed: panelAnalyzeHeaded,
+                    });
+                  }}
                 >
                   {busy ? '分析中…' : '开始分析'}
                 </button>
@@ -1804,7 +1841,12 @@ export function AgentChatPanel({
                   className="btn-secondary"
                   disabled={busy || !effectiveWorkflowId || !status?.hasApiKey}
                   title="先导出页面 PDF，再按当前模式分析"
-                  onClick={() => { void startAnalyze(true, analyzeNote, { mode: panelAnalyzeMode }); }}
+                  onClick={() => {
+                    void startAnalyze(true, analyzeNote, {
+                      mode: panelAnalyzeMode,
+                      headed: panelAnalyzeHeaded,
+                    });
+                  }}
                 >
                   导出 PDF
                 </button>

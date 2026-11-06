@@ -111,7 +111,9 @@ export type AgentAnalyzeMode =
   | 'general'
   | 'test-enhance'
   | 'business-doc'
-  | 'anomaly';
+  | 'anomaly'
+  | 'auto-run'
+  | 'param-run';
 
 export interface AgentAnalyzeWorkflowRequest {
   workflowId: string;
@@ -123,8 +125,15 @@ export interface AgentAnalyzeWorkflowRequest {
    * - test-enhance: selectors / asserts / writable script improvements
    * - business-doc: process docs / user stories
    * - anomaly: baseline vs latest run regression summary
+   * - auto-run: execute recorded workflow via playwright_play and report
+   * - param-run: map prompt values onto recorded fill/goto steps then execute
    */
   mode?: AgentAnalyzeMode;
+  /**
+   * For auto-run / param-run: whether to show a real browser window.
+   * Default false (headless). Studio「回放」也默认无头。
+   */
+  headed?: boolean;
   /** Extra user instruction appended to the analysis prompt. */
   note?: string;
   modelId?: string;

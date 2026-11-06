@@ -33,9 +33,12 @@ import type {
   PlaywrightRecordRequest,
   PlaywrightRunEvent,
   PlaywrightRunMode,
+  PlaywrightRunWithParamsRequest,
   PlaywrightSaveBaselineRequest,
   PlaywrightSaveReportRequest,
   PlaywrightScheduleConfig,
+  PlaywrightScriptStep,
+  PlaywrightScriptStepKind,
   PlaywrightStudioStatus,
   PlaywrightUpdateRequest,
   PlaywrightWorkflowDetail,
@@ -237,6 +240,267 @@ test.use({
     return `${script.slice(0, insertAt)}\n${block}${script.slice(insertAt)}`;
   }
   return `import { test, expect } from '@playwright/test';\n${block}${script}`;
+}
+
+function quoteScriptString(value: string, prefer: '"' | "'" = "'"): string {
+  if (prefer === "'") {
+    return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  }
+  return JSON.stringify(value);
+}
+
+function lineNumberAt(script: string, index: number): number {
+  return script.slice(0, Math.max(0, index)).split(/\n/).length;
+}
+
+function hintFromTarget(target: string): string {
+  const text = target.trim();
+  const getBy = text.match(/getBy(?:Label|Placeholder|Text|Role|TestId)\(\s*(['"`])([^'"`]+)\1/i);
+  if (getBy) return getBy[2];
+  const nameOpt = text.match(/name:\s*(['"`])([^'"`]+)\1/);
+  if (nameOpt) return nameOpt[2];
+  const css = text.match(/(['"`])([^'"`]+)\1/);
+  if (css) return css[2].slice(0, 48);
+  return text.slice(0, 48);
+}
+
+/** Parse recorded script for editable goto/fill/type/selectOption values. */
+export function extractScriptSteps(script: string): PlaywrightScriptStep[] {
+  const steps: PlaywrightScriptStep[] = [];
+  const patterns: Array<{ kind: PlaywrightScriptStepKind; re: RegExp }> = [
+    {
+      kind: 'goto',
+      re: /\.goto\(\s*(['"`])([^'"`]*?)\1/g,
+    },
+    {
+      kind: 'fill',
+      re: /\.fill\(\s*((?:[^,()]|\([^)]*\))+?)\s*,\s*(['"`])([^'"`]*?)\2/g,
+    },
+    {
+      kind: 'type',
+      re: /\.type\(\s*((?:[^,()]|\([^)]*\))+?)\s*,\s*(['"`])([^'"`]*?)\2/g,
+    },
+    {
+      kind: 'select',
+      re: /\.selectOption\(\s*((?:[^,()]|\([^)]*\))+?)\s*,\s*(['"`])([^'"`]*?)\2/g,
+    },
+  ];
+
+  for (const { kind, re } of patterns) {
+    re.lastIndex = 0;
+    let match = re.exec(script);
+    while (match) {
+      const fullIndex = match.index;
+      let target = '';
+      let value = '';
+      if (kind === 'goto') {
+        target = 'page.goto';
+        value = match[2] || '';
+      } else {
+        target = (match[1] || '').trim();
+        value = match[3] || '';
+      }
+      const id = `${kind}-${steps.length}`;
+      steps.push({
+        id,
+        index: steps.length,
+        kind,
+        target,
+        value,
+        line: lineNumberAt(script, fullIndex),
+        hint: kind === 'goto' ? '起始 URL' : hintFromTarget(target),
+      });
+      match = re.exec(script);
+    }
+  }
+
+  return steps.sort((a, b) => (a.line || 0) - (b.line || 0)).map((step, index) => ({
+    ...step,
+    index,
+    id: `${step.kind}-${index}`,
+  }));
+}
+
+function resolveParamForStep(
+  step: PlaywrightScriptStep,
+  params: Record<string, string>,
+): string | undefined {
+  const entries = Object.entries(params);
+  if (!entries.length) return undefined;
+
+  const direct = params[step.id] ?? params[String(step.index)] ?? params[`#${step.index}`];
+  if (typeof direct === 'string') return direct;
+
+  if (step.hint) {
+    const byHint = params[step.hint] ?? params[`${step.kind}:${step.hint}`];
+    if (typeof byHint === 'string') return byHint;
+  }
+
+  const targetKey = entries.find(([key]) => {
+    const k = key.trim().toLowerCase();
+    if (!k) return false;
+    return step.target.toLowerCase().includes(k)
+      || (step.hint || '').toLowerCase().includes(k)
+      || k === step.kind
+      || k === `${step.kind}${step.index}`;
+  });
+  if (targetKey) return targetKey[1];
+
+  // Chinese / loose labels: 邮箱、密码、用户名、标题、url
+  const labelMap: Array<{ keys: string[]; pred: (s: PlaywrightScriptStep) => boolean }> = [
+    { keys: ['url', '链接', '地址', '页面'], pred: (s) => s.kind === 'goto' },
+    { keys: ['邮箱', 'email', 'mail'], pred: (s) => /email|mail|邮箱/i.test(`${s.target} ${s.hint}`) },
+    { keys: ['密码', 'password', 'pwd'], pred: (s) => /pass|pwd|密码/i.test(`${s.target} ${s.hint}`) },
+    { keys: ['用户名', '账号', 'user', 'username', 'account'], pred: (s) => /user|account|name|账号|用户/i.test(`${s.target} ${s.hint}`) },
+    { keys: ['手机', '电话', 'phone', 'mobile', 'tel'], pred: (s) => /phone|mobile|tel|手机/i.test(`${s.target} ${s.hint}`) },
+    { keys: ['标题', 'title', '主题'], pred: (s) => /title|标题|主题/i.test(`${s.target} ${s.hint}`) },
+  ];
+  for (const item of labelMap) {
+    if (!item.pred(step)) continue;
+    for (const key of item.keys) {
+      const hit = entries.find(([k]) => k.trim().toLowerCase() === key.toLowerCase());
+      if (hit) return hit[1];
+    }
+  }
+  return undefined;
+}
+
+/** Replace literal values in script for matched steps. Returns new script + applied diffs. */
+export function applyParamsToScript(
+  script: string,
+  params: Record<string, string>,
+): { script: string; applied: Array<{ stepId: string; from: string; to: string }>; steps: PlaywrightScriptStep[] } {
+  const steps = extractScriptSteps(script);
+  const applied: Array<{ stepId: string; from: string; to: string }> = [];
+  if (!steps.length || !Object.keys(params).length) {
+    return { script, applied, steps };
+  }
+
+  let nextScript = script;
+  const ordered = [...steps].sort((a, b) => (b.line || 0) - (a.line || 0));
+  for (const step of ordered) {
+    const to = resolveParamForStep(step, params);
+    if (to === undefined || to === step.value) continue;
+    const escaped = step.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let replaced = false;
+    if (step.kind === 'goto') {
+      const re = new RegExp(`(\\.goto\\(\\s*)(['"\`])${escaped}\\2`);
+      nextScript = nextScript.replace(re, (full, prefix: string, q: string) => {
+        if (replaced) return full;
+        replaced = true;
+        return `${prefix}${quoteScriptString(to, q === '"' ? '"' : "'")}`;
+      });
+    } else {
+      const method = step.kind === 'fill' ? 'fill' : step.kind === 'type' ? 'type' : 'selectOption';
+      const re = new RegExp(`(\\.${method}\\(\\s*)([\\s\\S]*?)(,\\s*)(['"\`])${escaped}\\4(\\s*\\))`);
+      nextScript = nextScript.replace(re, (full, prefix: string, target: string, comma: string, q: string, suffix: string) => {
+        if (replaced) return full;
+        if (step.target && !target.includes(step.target.slice(0, Math.min(12, step.target.length))) && step.target.length > 6) {
+          return full;
+        }
+        replaced = true;
+        return `${prefix}${target}${comma}${quoteScriptString(to, q === '"' ? '"' : "'")}${suffix}`;
+      });
+    }
+    if (replaced) {
+      applied.push({ stepId: step.id, from: step.value, to });
+    }
+  }
+
+  return {
+    script: nextScript,
+    applied: applied.reverse(),
+    steps: extractScriptSteps(nextScript),
+  };
+}
+
+export function listScriptSteps(workflowId: string): PlaywrightScriptStep[] {
+  const detail = getWorkflow(workflowId);
+  return extractScriptSteps(detail.script || '');
+}
+
+export async function runWithParams(
+  request: PlaywrightRunWithParamsRequest,
+  options?: { wait?: boolean; timeoutMs?: number },
+): Promise<{
+  runId: string;
+  applied: Array<{ stepId: string; from: string; to: string }>;
+  steps: PlaywrightScriptStep[];
+  runEvent?: import('../shared/playwright').PlaywrightRunEvent;
+}> {
+  const meta = readMeta(request.workflowId);
+  const scriptFile = scriptPathFor(meta);
+  if (!existsSync(scriptFile)) {
+    throw new Error('脚本文件缺失。');
+  }
+  const original = readFileSync(scriptFile, 'utf8');
+  const { script: patched, applied, steps } = applyParamsToScript(original, request.params || {});
+  if (request.persistScript) {
+    writeFileSync(scriptFile, patched.endsWith('\n') ? patched : `${patched}\n`, 'utf8');
+    meta.updatedAt = nowIso();
+    meta.lastRunMessage = applied.length
+      ? `已按参数更新脚本（${applied.length} 处）并准备回放`
+      : '参数未匹配到可替换步骤，将按原脚本回放';
+    writeMeta(meta);
+  }
+
+  let tempScriptPath: string | null = null;
+  let overrideId: string | null = null;
+  try {
+    if (!request.persistScript && applied.length > 0) {
+      const runToken = randomUUID().slice(0, 8);
+      overrideId = `__studio_params_${runToken}`;
+      tempScriptPath = path.join(workflowDir(meta.id), `${overrideId}.spec.ts`);
+      writeFileSync(tempScriptPath, patched.endsWith('\n') ? patched : `${patched}\n`, 'utf8');
+    }
+
+    // If we wrote a temp script, point play at a temporary workflow copy via update+play is heavy.
+    // Instead: briefly swap script file content, play, restore — unless persistScript.
+    let restoreScript: string | null = null;
+    if (tempScriptPath && !request.persistScript) {
+      restoreScript = original;
+      writeFileSync(scriptFile, patched.endsWith('\n') ? patched : `${patched}\n`, 'utf8');
+    }
+
+    try {
+      const played = await playWorkflow({
+        id: meta.id,
+        mode: request.mode || 'headed',
+        browser: request.browser || meta.browser,
+        slowMoMs: request.slowMoMs ?? meta.slowMoMs,
+        recordHar: request.recordHar,
+      }, {
+        wait: options?.wait ?? true,
+        timeoutMs: options?.timeoutMs ?? 30 * 60 * 1000,
+      });
+      return {
+        runId: played.runId,
+        applied,
+        steps,
+        runEvent: played.runEvent,
+      };
+    } finally {
+      if (restoreScript != null) {
+        writeFileSync(scriptFile, restoreScript.endsWith('\n') ? restoreScript : `${restoreScript}\n`, 'utf8');
+      }
+      if (tempScriptPath && existsSync(tempScriptPath)) {
+        try {
+          rmSync(tempScriptPath, { force: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch (error) {
+    if (tempScriptPath && existsSync(tempScriptPath)) {
+      try {
+        rmSync(tempScriptPath, { force: true });
+      } catch {
+        // ignore
+      }
+    }
+    throw error;
+  }
 }
 
 function scriptHashFor(workflowId: string): string {

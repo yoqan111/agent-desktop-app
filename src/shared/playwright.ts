@@ -19,14 +19,51 @@ export type PlaywrightAnalyzeMode =
   | 'general'
   | 'test-enhance'
   | 'business-doc'
-  | 'anomaly';
+  | 'anomaly'
+  | 'auto-run'
+  | 'param-run';
 
 export const PLAYWRIGHT_ANALYZE_MODES: PlaywrightAnalyzeMode[] = [
   'general',
   'test-enhance',
   'business-doc',
   'anomaly',
+  'auto-run',
+  'param-run',
 ];
+
+/** Extracted editable step from a recorded Playwright script. */
+export type PlaywrightScriptStepKind = 'goto' | 'fill' | 'type' | 'select' | 'check' | 'other';
+
+export interface PlaywrightScriptStep {
+  id: string;
+  index: number;
+  kind: PlaywrightScriptStepKind;
+  /** Locator / selector expression text from the script. */
+  target: string;
+  /** Current literal value (URL / filled text / option). */
+  value: string;
+  /** 1-based line number in script when available. */
+  line?: number;
+  hint?: string;
+}
+
+export interface PlaywrightRunWithParamsRequest {
+  workflowId: string;
+  /**
+   * Map step id → new value, or short aliases:
+   * - "0" / "1" for step index
+   * - selector fragment keys matched against step.target
+   * - kind labels like "fill:邮箱" when hint present
+   */
+  params: Record<string, string>;
+  mode?: PlaywrightRunMode;
+  browser?: PlaywrightBrowser;
+  slowMoMs?: number;
+  recordHar?: boolean;
+  /** Persist substituted script back to the workflow (default false; uses temp script). */
+  persistScript?: boolean;
+}
 
 export interface PlaywrightBaselineInfo {
   workflowId: string;
@@ -293,6 +330,12 @@ export interface PlaywrightApi {
   getBaseline(workflowId: string): Promise<PlaywrightBaselineInfo | null>;
   compareBaseline(workflowId: string): Promise<PlaywrightBaselineCompareResult>;
   saveReport(request: PlaywrightSaveReportRequest): Promise<PlaywrightArtifact>;
+  listScriptSteps(workflowId: string): Promise<PlaywrightScriptStep[]>;
+  runWithParams(request: PlaywrightRunWithParamsRequest): Promise<{
+    runId: string;
+    applied: Array<{ stepId: string; from: string; to: string }>;
+    steps: PlaywrightScriptStep[];
+  }>;
   getSchedule(): Promise<PlaywrightScheduleConfig>;
   setSchedule(config: Partial<PlaywrightScheduleConfig>): Promise<PlaywrightScheduleConfig>;
   onRunEvent(handler: (event: PlaywrightRunEvent) => void): () => void;
@@ -322,6 +365,8 @@ export const PlaywrightIpc = {
   getBaseline: 'pw:getBaseline',
   compareBaseline: 'pw:compareBaseline',
   saveReport: 'pw:saveReport',
+  listScriptSteps: 'pw:listScriptSteps',
+  runWithParams: 'pw:runWithParams',
   getSchedule: 'pw:getSchedule',
   setSchedule: 'pw:setSchedule',
   event: 'pw:event',
