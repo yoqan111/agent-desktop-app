@@ -3918,11 +3918,12 @@ button:disabled { opacity: 0.45; cursor: default; }
   flex: none;
   z-index: 5;
   display: grid;
-  gap: 10px;
+  gap: 0;
   padding: 10px 14px 12px;
   border-top: 1px dashed var(--line-strong);
   background: rgba(8, 12, 9, 0.96);
   backdrop-filter: blur(8px);
+  overflow: visible;
 }
 
 .agent-modal-backdrop,
@@ -4059,34 +4060,6 @@ button:disabled { opacity: 0.45; cursor: default; }
   font-size: 12px;
 }
 
-.agent-actions-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-
-.agent-actions-row .btn-primary,
-.agent-actions-row .btn-secondary {
-  width: auto;
-  flex: none;
-  white-space: nowrap;
-  padding: 7px 14px;
-  font-size: 12px;
-}
-
-.agent-actions-row .btn-primary {
-  box-shadow: 0 0 12px rgba(74, 222, 128, 0.18);
-}
-
-.agent-mode-field {
-  display: grid;
-  gap: 4px;
-  min-width: 160px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
 .agent-mcp-hint {
   margin-left: auto;
   font-size: 11px;
@@ -4100,22 +4073,84 @@ button:disabled { opacity: 0.45; cursor: default; }
 
 .agent-composer {
   position: relative;
+  z-index: 6;
   display: grid;
   grid-template-columns: 1fr auto;
   grid-template-areas:
+    "toolbar toolbar"
     "menu menu"
     "chip chip"
     "input send";
   gap: 0;
   align-items: stretch;
-  border: 1px dashed var(--line);
-  border-radius: 12px;
-  background: #0a0a0a;
-  overflow: hidden;
+  border: 1px solid rgba(74, 222, 128, 0.22);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 42%),
+    #0a0a0a;
+  overflow: visible;
 }
 
 .agent-composer:focus-within {
-  border-color: rgba(74, 222, 128, 0.45);
+  border-color: rgba(74, 222, 128, 0.48);
+  box-shadow: 0 0 0 1px rgba(74, 222, 128, 0.08);
+}
+
+.agent-composer-toolbar {
+  grid-area: toolbar;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 12px;
+  padding: 10px 12px;
+  border-bottom: 1px dashed var(--line);
+  background: rgba(74, 222, 128, 0.03);
+}
+
+.agent-mode-field {
+  display: grid;
+  gap: 4px;
+  min-width: 200px;
+  max-width: 280px;
+  flex: 1 1 200px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.agent-mode-field > span {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.agent-mode-select .pw-select-trigger {
+  padding: 7px 10px;
+  border-radius: 9px;
+  font-size: 12px;
+}
+
+.agent-mode-select .pw-select-menu {
+  min-width: 260px;
+  width: max(100%, 260px);
+}
+
+.agent-composer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-composer-actions .btn-primary,
+.agent-composer-actions .btn-secondary {
+  width: auto;
+  flex: none;
+  white-space: nowrap;
+  padding: 7px 14px;
+  font-size: 12px;
+}
+
+.agent-composer-actions .btn-primary {
+  box-shadow: 0 0 12px rgba(74, 222, 128, 0.18);
 }
 
 .agent-mention-chip-row {
@@ -4125,6 +4160,7 @@ button:disabled { opacity: 0.45; cursor: default; }
   align-items: center;
   gap: 8px;
   padding: 10px 12px 0;
+  border-radius: 0;
 }
 
 .agent-mention-chip {
@@ -4304,10 +4340,10 @@ button:disabled { opacity: 0.45; cursor: default; }
   grid-area: input;
   width: 100%;
   resize: none;
-  min-height: 56px;
+  min-height: 64px;
   max-height: 140px;
   border: 0;
-  border-radius: 0;
+  border-radius: 0 0 0 14px;
   background: transparent;
   color: var(--text);
   padding: 12px 14px;
@@ -4318,9 +4354,10 @@ button:disabled { opacity: 0.45; cursor: default; }
 .agent-send {
   grid-area: send;
   align-self: stretch;
-  min-width: 72px;
+  min-width: 76px;
   border: 0;
   border-left: 1px dashed var(--line);
+  border-radius: 0 0 14px 0;
   background: rgba(74, 222, 128, 0.14);
   color: var(--accent);
   font-weight: 600;
@@ -4793,6 +4830,14 @@ button:disabled { opacity: 0.45; cursor: default; }
     0 0 0 1px rgba(0, 0, 0, 0.45),
     0 18px 42px rgba(0, 0, 0, 0.62);
   backdrop-filter: blur(10px);
+}
+
+.pw-select.is-up .pw-select-menu {
+  top: auto;
+  bottom: calc(100% + 6px);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    0 -14px 36px rgba(0, 0, 0, 0.55);
 }
 
 .pw-select-option {

@@ -20,6 +20,8 @@ interface PwSelectProps {
   disabled?: boolean;
   placeholder?: string;
   className?: string;
+  /** Open the menu above the trigger (useful near the bottom of a panel). */
+  placement?: 'down' | 'up';
   /** Optional accessible name when not wrapped by a visible label. */
   'aria-label'?: string;
   title?: string;
@@ -32,6 +34,7 @@ export function PwSelect({
   disabled = false,
   placeholder = '请选择',
   className = '',
+  placement = 'down',
   'aria-label': ariaLabel,
   title,
   onChange,
@@ -82,7 +85,7 @@ export function PwSelect({
 
   return (
     <div
-      className={`pw-select${open ? ' is-open' : ''}${disabled ? ' is-disabled' : ''}${className ? ` ${className}` : ''}`}
+      className={`pw-select${open ? ' is-open' : ''}${disabled ? ' is-disabled' : ''}${placement === 'up' ? ' is-up' : ''}${className ? ` ${className}` : ''}`}
       ref={rootRef}
     >
       <button

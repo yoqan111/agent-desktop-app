@@ -79,6 +79,13 @@ function analyzeModeLabel(mode: AgentAnalyzeMode): string {
   return '综合分析';
 }
 
+function analyzeModeHint(mode: AgentAnalyzeMode): string {
+  if (mode === 'test-enhance') return '补断言、稳定选择器与可回归建议';
+  if (mode === 'business-doc') return '梳理业务路径并生成说明文档';
+  if (mode === 'anomaly') return '对比基线，定位异常与回归风险';
+  return '通读脚本、产物与日志给出总览';
+}
+
 function modelValue(model: AgentModelInfo): string {
   return model.key || agentModelKey(model);
 }
@@ -1759,54 +1766,63 @@ export function AgentChatPanel({
         </div>
 
         <footer className="agent-dock">
-          <div className="agent-actions-row">
-            <label className="agent-mode-field">
-              分析模式
-              <PwSelect
-                value={panelAnalyzeMode}
-                disabled={busy}
-                onChange={(value) => setPanelAnalyzeMode(value as AgentAnalyzeMode)}
-                options={PLAYWRIGHT_ANALYZE_MODES.map((mode) => ({
-                  value: mode,
-                  label: analyzeModeLabel(mode),
-                }))}
-              />
-            </label>
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={busy || !effectiveWorkflowId || !status?.hasApiKey}
-              title="基于脚本 / 产物 / 基线按所选模式分析（不导出 PDF）"
-              onClick={() => { void startAnalyze(false, analyzeNote, { mode: panelAnalyzeMode }); }}
-            >
-              {busy ? '分析中…' : analyzeModeLabel(panelAnalyzeMode)}
-            </button>
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={busy || !effectiveWorkflowId || !status?.hasApiKey}
-              onClick={() => { void startAnalyze(true, analyzeNote, { mode: panelAnalyzeMode }); }}
-            >
-              导出 PDF 并分析
-            </button>
-            <button type="button" className="btn-secondary" disabled={!busy} onClick={() => { void window.agent.cancel(); }}>
-              停止
-            </button>
-            <button type="button" className="btn-secondary" disabled={busy} onClick={() => { void handleClear(); }}>
-              清空消息
-            </button>
-            {status?.mcpUrl ? (
-              <span className="agent-mcp-hint" title={status.mcpUrl}>MCP 已连接</span>
-            ) : (
-              <span className="agent-mcp-hint is-warn">MCP 未就绪</span>
-            )}
-          </div>
-
           <form
             ref={composerRef}
             className="agent-composer"
             onSubmit={(e) => { void handleSend(e); }}
           >
+            <div className="agent-composer-toolbar">
+              <label className="agent-mode-field">
+                <span>分析模式</span>
+                <PwSelect
+                  className="agent-mode-select"
+                  value={panelAnalyzeMode}
+                  disabled={busy}
+                  placement="up"
+                  aria-label="分析模式"
+                  onChange={(value) => setPanelAnalyzeMode(value as AgentAnalyzeMode)}
+                  options={PLAYWRIGHT_ANALYZE_MODES.map((mode) => ({
+                    value: mode,
+                    label: analyzeModeLabel(mode),
+                    description: analyzeModeHint(mode),
+                  }))}
+                />
+              </label>
+
+              <div className="agent-composer-actions">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={busy || !effectiveWorkflowId || !status?.hasApiKey}
+                  title={`按「${analyzeModeLabel(panelAnalyzeMode)}」分析脚本 / 产物 / 基线（不导出 PDF）`}
+                  onClick={() => { void startAnalyze(false, analyzeNote, { mode: panelAnalyzeMode }); }}
+                >
+                  {busy ? '分析中…' : '开始分析'}
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={busy || !effectiveWorkflowId || !status?.hasApiKey}
+                  title="先导出页面 PDF，再按当前模式分析"
+                  onClick={() => { void startAnalyze(true, analyzeNote, { mode: panelAnalyzeMode }); }}
+                >
+                  导出 PDF
+                </button>
+                <button type="button" className="btn-secondary" disabled={!busy} onClick={() => { void window.agent.cancel(); }}>
+                  停止
+                </button>
+                <button type="button" className="btn-secondary" disabled={busy} onClick={() => { void handleClear(); }}>
+                  清空
+                </button>
+              </div>
+
+              {status?.mcpUrl ? (
+                <span className="agent-mcp-hint" title={status.mcpUrl}>MCP 已连接</span>
+              ) : (
+                <span className="agent-mcp-hint is-warn">MCP 未就绪</span>
+              )}
+            </div>
+
             {mentionOpen ? (
               <div className="agent-mention-menu" role="listbox" aria-label="录制列表">
                 <header>切换录制</header>
@@ -1916,7 +1932,7 @@ export function AgentChatPanel({
                 >
                   ×
                 </button>
-                <span className="agent-mention-hint">点击 @ 标签可切换录制</span>
+                <span className="agent-mention-hint">@ 切换录制 · Enter 发送 · Shift+Enter 换行</span>
               </div>
             ) : null}
 
